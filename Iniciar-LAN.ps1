@@ -14,6 +14,12 @@ $ErrorActionPreference = "Stop"
 $repoRoot   = "D:\Aquiles\Tienda_Chavalos_Virtual_web"
 $dockerPath = Join-Path $repoRoot "Despliegue\Hosting\postgres-local"
 $nextPath   = Join-Path $repoRoot "Frontend\NextJS_React\web"
+# ========= BACKUP CONFIG =========
+$doBackupOnStart = $true
+$backupDir       = "D:\Aquiles\Backups_Chavalos"
+$backupKeepLast  = 30  # conserva últimos N zips (0 = no borrar)
+$pgContainerName = "ferreteria_chavalos_db"
+
 
 # ========= UI HELPERS =========
 function Fail($msg) {
@@ -34,6 +40,115 @@ function Test-Admin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   } catch { return $false }
 }
+
+
+function Get-PgEnvFromContainer {
+  param([Parameter(Mandatory=$true)][string]$Container)
+
+  $db   = (docker exec $Container printenv POSTGRES_DB 2>$null).Trim()
+  $user = (docker exec $Container printenv POSTGRES_USER 2>$null).Trim()
+  $pass = (docker exec $Container printenv POSTGRES_PASSWORD 2>$null).Trim()
+
+  if (-not $db)   { $db = "postgres" }
+  if (-not $user) { $user = "postgres" }
+
+  return [pscustomobject]@{ DB=$db; USER=$user; PASS=$pass }
+}
+
+function Get-ExistingTables {
+  param(
+    [Parameter(Mandatory=$true)][string]$Container,
+    [Parameter(Mandatory=$true)][string]$Db,
+    [Parameter(Mandatory=$true)][string]$User,
+    [Parameter(Mandatory=$true)][string]$Pass,
+    [Parameter(Mandatory=$true)][string[]]$Tables
+  )
+
+  $existing = New-Object System.Collections.Generic.List[string]
+  foreach ($t in $Tables) {
+    # to_regclass devuelve null si no existe
+    $q = "SELECT to_regclass('public.$t');"
+    $res = docker exec -e PGPASSWORD=$Pass $Container psql -U $User -d $Db -tAc $q 2>$null
+    $res = ($res | Out-String).Trim()
+    if ($res -and $res -ne "null") {
+      $existing.Add($t) | Out-Null
+    }
+  }
+  return $existing.ToArray()
+}
+
+function Backup-KeyData {
+  param(
+    [Parameter(Mandatory=$true)][string]$Container,
+    [Parameter(Mandatory=$true)][string]$BackupDir,
+    [int]$KeepLast = 30
+  )
+
+  $ErrorActionPreference = "Stop"
+  New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+  $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+
+  $env = Get-PgEnvFromContainer -Container $Container
+  $db   = $env.DB
+  $user = $env.USER
+  $pass = $env.PASS
+
+  # Tablas candidatas (si alguna no existe, se ignora automáticamente)
+  $candidates = @(
+    "products",
+    "product_presentations",
+    "price_changes",
+    "sales",
+    "sale_items",
+    "sale_payments"
+  )
+
+  $tables = Get-ExistingTables -Container $Container -Db $db -User $user -Pass $pass -Tables $candidates
+  if (-not $tables -or $tables.Count -eq 0) {
+    throw "No se encontró ninguna tabla candidata (products/sales/...). Revisa nombres de tablas."
+  }
+
+  $dumpIn  = "/tmp/${db}_KEY_${ts}.dump"
+  $dumpOut = Join-Path $BackupDir "${db}_KEY_${ts}.dump"
+  $zipOut  = Join-Path $BackupDir "${db}_KEY_${ts}.zip"
+
+  # Construir args -t public.table
+  $tArgs = @()
+  foreach ($t in $tables) { $tArgs += @("-t", "public.$t") }
+
+  # Dump custom SOLO de esas tablas
+  docker exec -e PGPASSWORD=$pass $Container pg_dump -U $user -d $db -Fc @tArgs -f $dumpIn | Out-Null
+
+  # Verificación rápida del dump (TOC)
+  $toc = docker exec $Container pg_restore -l $dumpIn 2>$null | Select-Object -First 8
+  if (-not $toc) { throw "Dump creado pero no pude verificar con pg_restore -l." }
+
+  # Copiar a host
+  docker cp "${Container}:${dumpIn}" "$dumpOut" | Out-Null
+  docker exec $Container rm -f $dumpIn 2>$null | Out-Null
+
+  # Comprimir (guardando el .dump también suelto)
+  Compress-Archive -Path @($dumpOut) -DestinationPath $zipOut -Force
+
+  # Retención
+  if ($KeepLast -gt 0) {
+    $pattern = "${db}_KEY_*.zip"
+    $zips = Get-ChildItem -Path $BackupDir -Filter $pattern -File |
+            Sort-Object LastWriteTime -Descending
+    if ($zips.Count -gt $KeepLast) {
+      $toDelete = $zips | Select-Object -Skip $KeepLast
+      foreach ($f in $toDelete) { Remove-Item -Force $f.FullName }
+    }
+  }
+
+  return [pscustomobject]@{
+    Zip  = $zipOut
+    Dump = $dumpOut
+    Tables = $tables -join ", "
+  }
+}
+
+
 
 function Get-LanIPv4 {
   # 1) Interface de la ruta por defecto (mejor)
@@ -251,6 +366,21 @@ try {
   Fail "Error iniciando PostgreSQL con docker compose. Revisa docker-compose.yml en $dockerPath"
 }
 Write-Host ""
+
+
+# ========= [2.5] BACKUP AUTOMÁTICO =========
+if ($doBackupOnStart) {
+  Step "[2.5/4] Backup automático (productos/ventas)..."
+  try {
+    $result = Backup-KeyData -Container $pgContainerName -BackupDir $backupDir -KeepLast $backupKeepLast
+    Ok "Backup KEY OK: $($result.Zip)"
+    Info "Tablas incluidas: $($result.Tables)"
+  } catch {
+    Warn "Backup KEY falló (no detengo el arranque): $($_.Exception.Message)"
+  }
+  Write-Host ""
+}
+
 
 # ========= [3] IP LAN =========
 Step "[3/4] Detectando IP LAN correcta..."
