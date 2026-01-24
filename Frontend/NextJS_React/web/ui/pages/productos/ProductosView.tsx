@@ -73,6 +73,14 @@ export function ProductosView({ user }: ProductosViewProps) {
   const [formErrors, setFormErrors] = useState<FormErrors>({})
   const modalRef = useRef<HTMLDivElement>(null)
 
+  type NameSuggestion = Pick<Product, 'id' | 'sku' | 'name' | 'isActive'>
+
+  const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
+  const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
+  const [nameCheckLoading, setNameCheckLoading] = useState(false)
+
+  const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
+
   useEffect(() => {
     loadProducts()
   }, [search])
