@@ -52,6 +52,17 @@ interface FormErrors {
   unit?: string
 }
 
+function useDebouncedValue<T>(value: T, delay = 350) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
+  return debounced
+}
+
+
+
 export function ProductosView({ user }: ProductosViewProps) {
   const { notify } = useToast()
   const [products, setProducts] = useState<Product[]>([])

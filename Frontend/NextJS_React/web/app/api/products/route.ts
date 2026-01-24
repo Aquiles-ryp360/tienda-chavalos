@@ -15,6 +15,16 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
+    //.............................................
+    const suggest = searchParams.get('suggest') === '1'
+
+    if (suggest && search) {
+      const result = await productsAPI.suggestProducts({ search, isActive, limit })
+      return NextResponse.json(result)
+    } 
+    //.............................................
+
+
     const isActive = isActiveParam === 'true' ? true : isActiveParam === 'false' ? false : undefined
 
     const result = await productsAPI.searchProducts({

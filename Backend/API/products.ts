@@ -396,3 +396,23 @@ export async function deleteProductPresentation(presentationId: string) {
 
   return { success: true }
 }
+
+export async function suggestProducts(query: { search: string; isActive?: boolean; limit?: number }) {
+  const where: any = {}
+
+  if (query.isActive !== undefined) where.isActive = query.isActive
+
+  const q = query.search?.trim()
+  if (q) {
+    where.OR = [{ sku: { contains: q, mode: 'insensitive' } }, { name: { contains: q, mode: 'insensitive' } }]
+  }
+
+  const items = await prisma.product.findMany({
+    where,
+    select: { id: true, sku: true, name: true, isActive: true },
+    orderBy: { name: 'asc' },
+    take: query.limit ?? 8,
+  })
+
+  return { items }
+}

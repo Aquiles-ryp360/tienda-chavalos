@@ -113,6 +113,42 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   }, [productId])
 
   // Sugerencias / alerta de duplicado por nombre (case-insensitive)
+
+  const debouncedName = useDebouncedValue(form.name, 350)
+
+  useEffect(() => {
+    const q = normalizeName(debouncedName)
+    if (q.length < 2) {
+      setNameSuggestions([])
+      setNameDuplicate(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setNameCheckLoading(true)
+
+    fetch(`/api/products?search=${encodeURIComponent(q)}&limit=6&suggest=1`, {
+      signal: controller.signal,
+    })
+      .then(async (r) => (r.ok ? r.json() : Promise.reject(await r.text())))
+      .then((data) => {
+        const items = Array.isArray(data) ? data : (data.items ?? [])
+        setNameSuggestions(items)
+
+        const key = normalizeName(form.name).toLowerCase()
+        const dup = items.find((p: any) => normalizeName(p.name).toLowerCase() === key) ?? null
+        setNameDuplicate(dup)
+      })
+      .catch((e) => {
+        if (e?.name !== 'AbortError') console.error(e)
+      })
+      .finally(() => setNameCheckLoading(false))
+
+    return () => controller.abort()
+  }, [debouncedName])
+
+  //.................................................................
+
   useEffect(() => {
     const q = normalizeName(name)
     const currentId = productId || null
