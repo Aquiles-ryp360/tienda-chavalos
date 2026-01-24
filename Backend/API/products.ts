@@ -2,6 +2,10 @@ import { prisma } from '@web/lib/prisma'
 import type { Product, ProductPresentation } from '@web/lib/db'
 import { ProductUnit, Prisma } from '@web/lib/db'
 
+function normalizeProductName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ')
+}
+
 export interface CreateProductInput {
   sku: string
   name: string
@@ -50,11 +54,24 @@ export interface ProductWithPresentations extends Omit<Product, 'price' | 'stock
  * Crear producto
  */
 export async function createProduct(input: CreateProductInput): Promise<Product> {
+  const normalizedName = normalizeProductName(input.name)
+  const existing = await prisma.product.findFirst({
+    where: { name: { equals: normalizedName, mode: 'insensitive' } },
+    select: { id: true, sku: true, name: true, isActive: true },
+  })
+  if (existing) {
+    const err: any = new Error('DUPLICATE_PRODUCT_NAME')
+    err.code = 'DUPLICATE_PRODUCT_NAME'
+    err.existing = existing
+    throw err
+  }
+
   // Crear producto y, si no hay presentaciones, crear una default automáticamente
   return await prisma.$transaction(async (tx) => {
     const product = await tx.product.create({
       data: {
         ...input,
+        name: normalizedName,
         minStock: new Prisma.Decimal(input.minStock ?? 5),
         price: new Prisma.Decimal(input.price),
         stock: new Prisma.Decimal(input.stock),
@@ -254,6 +271,24 @@ export async function updateProduct(
   id: string,
   input: UpdateProductInput
 ): Promise<Product> {
+  if (input.name !== undefined) {
+    const normalizedName = normalizeProductName(input.name)
+    const existing = await prisma.product.findFirst({
+      where: {
+        id: { not: id },
+        name: { equals: normalizedName, mode: 'insensitive' },
+      },
+      select: { id: true, sku: true, name: true, isActive: true },
+    })
+    if (existing) {
+      const err: any = new Error('DUPLICATE_PRODUCT_NAME')
+      err.code = 'DUPLICATE_PRODUCT_NAME'
+      err.existing = existing
+      throw err
+    }
+    // Guardar nombre normalizado
+    input = { ...input, name: normalizedName }
+  }
   const data: any = { ...input }
   if (input.price !== undefined) data.price = new Prisma.Decimal(input.price)
   if (input.stock !== undefined) data.stock = new Prisma.Decimal(input.stock)

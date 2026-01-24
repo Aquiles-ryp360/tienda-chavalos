@@ -113,5 +113,15 @@ export async function DELETE(
       { error: 'Error al eliminar producto' },
       { status: 500 }
     )
+    
+        if (error.code === 'DUPLICATE_PRODUCT_NAME') {
+      return NextResponse.json(
+        { error: 'Ya existe un producto con ese nombre', existing: error.existing },
+        { status: 409 }
+      )
+    }
+
+
+
   }
 }

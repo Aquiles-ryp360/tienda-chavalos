@@ -265,3 +265,68 @@ small {
     overflow-x: auto;
   }
 }
+/* ===== No duplicados: sugerencias + alerta ===== */
+.dupWarning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 193, 7, 0.5);
+  background: rgba(255, 193, 7, 0.08);
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.dupLink {
+  margin-left: 8px;
+  text-decoration: underline;
+}
+
+.suggestHint {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.suggestBox {
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.suggestTitle {
+  padding: 8px 10px;
+  font-size: 12px;
+  opacity: 0.85;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.suggestList {
+  display: flex;
+  flex-direction: column;
+}
+
+.suggestItem {
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.suggestItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.suggestName {
+  display: block;
+  font-size: 13px;
+}
+
+.suggestMeta {
+  display: block;
+  font-size: 12px;
+  opacity: 0.75;
+  margin-top: 2px;
+}

@@ -77,6 +77,53 @@ export function ProductosView({ user }: ProductosViewProps) {
     loadProducts()
   }, [search])
 
+  // Sugerencias / alerta de duplicado por nombre (solo cuando el modal está abierto)
+  useEffect(() => {
+    if (!showModal) return
+    const q = normalizeName(formData.name)
+    const currentId = editingProduct?.id || null
+
+    if (q.length < 2) {
+      setNameSuggestions([])
+      setNameDuplicate(null)
+      return
+    }
+
+    let cancelled = false
+    const t = setTimeout(async () => {
+      setNameCheckLoading(true)
+      try {
+        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`)
+        const data = await res.json()
+        if (cancelled) return
+
+        const list: NameSuggestion[] = (data.products || []).map((p: any) => ({
+          id: String(p.id),
+          sku: String(p.sku),
+          name: String(p.name),
+          isActive: Boolean(p.isActive),
+        }))
+        setNameSuggestions(list)
+
+        const qKey = q.toLowerCase()
+        const exact = list.find((p) => normalizeName(p.name).toLowerCase() === qKey && p.id !== currentId)
+        setNameDuplicate(exact || null)
+      } catch {
+        if (!cancelled) {
+          setNameSuggestions([])
+          setNameDuplicate(null)
+        }
+      } finally {
+        if (!cancelled) setNameCheckLoading(false)
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [showModal, formData.name, editingProduct?.id])
+
   useEffect(() => {
     if (saveSuccess) {
       const timer = setTimeout(() => setSaveSuccess(false), 4000)
@@ -266,15 +313,25 @@ export function ProductosView({ user }: ProductosViewProps) {
       return
     }
 
+    const normalizedName = normalizeName(formData.name)
+    if (
+      nameDuplicate &&
+      normalizeName(nameDuplicate.name).toLowerCase() === normalizedName.toLowerCase() &&
+      nameDuplicate.id !== (editingProduct?.id || null)
+    ) {
+      setFormErrors((prev) => ({ ...prev, name: `Ya existe: ${nameDuplicate.name} (SKU ${nameDuplicate.sku}).` }))
+      return
+    }
+
     try {
       const priceNum = parseFloat(formData.price.replace(',', '.'))
       const stockNum = parseFloat(formData.stock.replace(',', '.'))
       const minStockNum = parseFloat(formData.minStock.replace(',', '.'))
 
       const payload = {
-        sku: formData.sku,
-        name: formData.name,
-        description: formData.description,
+        sku: String(formData.sku).trim(),
+      name: normalizeName(String(formData.name)),
+      description: formData.description ? String(formData.description).trim() : null,
         unit: formData.unit,
         price: priceNum,
         stock: stockNum,
@@ -583,6 +640,34 @@ export function ProductosView({ user }: ProductosViewProps) {
                     <span id="name-error" className={styles.errorMessage}>
                       {formErrors.name}
                     </span>
+                  )}
+                  {nameDuplicate && (
+                    <div className={styles.dupWarning}>
+                      ⚠ Ya existe este nombre: <b>{nameDuplicate.name}</b> (SKU {nameDuplicate.sku}) — {nameDuplicate.isActive ? 'Activo' : 'Inactivo'}.
+                    </div>
+                  )}
+
+                  {nameCheckLoading && normalizeName(formData.name).length >= 2 && (
+                    <div className={styles.suggestHint}>Buscando coincidencias…</div>
+                  )}
+
+                  {!nameDuplicate && nameSuggestions.length > 0 && normalizeName(formData.name).length >= 2 && (
+                    <div className={styles.suggestBox}>
+                      <div className={styles.suggestTitle}>Coincidencias</div>
+                      <div className={styles.suggestList}>
+                        {nameSuggestions.slice(0, 6).map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            className={styles.suggestItem}
+                            onClick={() => setFormData((prev) => ({ ...prev, name: p.name }))}
+                          >
+                            <span className={styles.suggestName}>{p.name}</span>
+                            <span className={styles.suggestMeta}>SKU {p.sku} · {p.isActive ? 'Activo' : 'Inactivo'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               </fieldset>

@@ -86,7 +86,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Requiere rol ADMIN' }, { status: 403 })
     }
 
+    if (error.code === 'DUPLICATE_PRODUCT_NAME') {
+      return NextResponse.json(
+        { error: 'Ya existe un producto con ese nombre', existing: error.existing },
+        { status: 409 }
+      )
+    }
+
     if (error.code === 'P2002') {
+      // Conflicto de índice único (normalmente SKU)
       return NextResponse.json(
         { error: 'El SKU ya existe' },
         { status: 409 }

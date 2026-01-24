@@ -70,6 +70,14 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   // Form state
   const [sku, setSku] = useState('')
   const [name, setName] = useState('')
+
+  type NameSuggestion = Pick<Product, 'id' | 'sku' | 'name' | 'isActive'>
+  const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
+  const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
+  const [nameCheckLoading, setNameCheckLoading] = useState(false)
+
+  const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
+
   const [description, setDescription] = useState('')
   const [unit, setUnit] = useState('UNIDAD')
   const [price, setPrice] = useState('')
@@ -103,6 +111,52 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       loadPriceHistory()
     }
   }, [productId])
+
+  // Sugerencias / alerta de duplicado por nombre (case-insensitive)
+  useEffect(() => {
+    const q = normalizeName(name)
+    const currentId = productId || null
+
+    if (q.length < 2) {
+      setNameSuggestions([])
+      setNameDuplicate(null)
+      return
+    }
+
+    let cancelled = false
+    const t = setTimeout(async () => {
+      setNameCheckLoading(true)
+      try {
+        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`)
+        const data = await res.json()
+        if (cancelled) return
+
+        const list: NameSuggestion[] = (data.products || []).map((p: any) => ({
+          id: String(p.id),
+          sku: String(p.sku),
+          name: String(p.name),
+          isActive: Boolean(p.isActive),
+        }))
+
+        setNameSuggestions(list)
+        const qKey = q.toLowerCase()
+        const exact = list.find((p) => normalizeName(p.name).toLowerCase() === qKey && p.id !== currentId)
+        setNameDuplicate(exact || null)
+      } catch {
+        if (!cancelled) {
+          setNameSuggestions([])
+          setNameDuplicate(null)
+        }
+      } finally {
+        if (!cancelled) setNameCheckLoading(false)
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [name, productId])
 
   const loadProduct = async () => {
     try {
@@ -140,6 +194,20 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   }
 
   const handleSaveProduct = async () => {
+    const normalizedName = normalizeName(name)
+    if (
+      nameDuplicate &&
+      nameDuplicate.id !== (productId || null) &&
+      normalizeName(nameDuplicate.name).toLowerCase() === normalizedName.toLowerCase()
+    ) {
+      notify({
+        type: 'warning',
+        title: 'Nombre duplicado',
+        message: `Ya existe: ${nameDuplicate.name} (SKU ${nameDuplicate.sku}). Edita ese producto en vez de duplicarlo.`,
+      })
+      return
+    }
+
     if (!sku.trim() || !name.trim() || !price) {
       notify({ type: 'warning', title: 'Campos incompletos', message: 'Por favor completa los campos requeridos' })
       return
@@ -155,9 +223,9 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sku,
-          name,
-          description,
+          sku: sku.trim(),
+          name: normalizeName(name),
+          description: description.trim() || null,
           unit,
           price: parseFloat(price),
           stock: parseFloat(stock),
@@ -168,6 +236,14 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       const data = await res.json()
 
       if (!res.ok) {
+        if (res.status === 409 && data?.existing) {
+          notify({
+            type: 'warning',
+            title: 'Nombre duplicado',
+            message: `Ya existe: ${data.existing.name} (SKU ${data.existing.sku}).`,
+          })
+          return
+        }
         notify({ type: 'error', title: 'Error al guardar', message: data.error || 'No se pudo guardar el producto' })
         return
       }
@@ -309,6 +385,35 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                   className={styles.input}
                   placeholder="Nombre del producto"
                 />
+                              {nameDuplicate && (
+                  <div className={styles.dupWarning}>
+                    ⚠ Ya existe este nombre: <b>{nameDuplicate.name}</b> (SKU {nameDuplicate.sku}) — {nameDuplicate.isActive ? 'Activo' : 'Inactivo'}.{' '}
+                    <a className={styles.dupLink} href={`/admin/productos/${nameDuplicate.id}`}>Abrir</a>
+                  </div>
+                )}
+
+                {nameCheckLoading && normalizeName(name).length >= 2 && (
+                  <div className={styles.suggestHint}>Buscando coincidencias…</div>
+                )}
+
+                {!nameDuplicate && nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
+                  <div className={styles.suggestBox}>
+                    <div className={styles.suggestTitle}>Coincidencias</div>
+                    <div className={styles.suggestList}>
+                      {nameSuggestions.slice(0, 6).map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className={styles.suggestItem}
+                          onClick={() => setName(p.name)}
+                        >
+                          <span className={styles.suggestName}>{p.name}</span>
+                          <span className={styles.suggestMeta}>SKU {p.sku} · {p.isActive ? 'Activo' : 'Inactivo'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className={styles.formGroup}>
