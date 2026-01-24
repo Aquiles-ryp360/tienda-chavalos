@@ -1,0 +1,29 @@
+[package]
+name = "chavalos-server"
+version = "1.0.0"
+description = "Servidor de gestión Ferretería Chavalos"
+authors = ["Ferretería Chavalos"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "path-all", "fs-write-file", "fs-remove-file", "fs-read-file", "fs-create-dir", "os-all", "fs-exists", "dialog-open", "dialog-save", "clipboard-all", "shell-open", "system-tray"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+anyhow = "1.0"
+clipboard-win = "5.0"
+sha2 = "0.10"
+lazy_static = "1.4"
+
+[features]
+# This feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "sale_items" ALTER COLUMN "baseQty" DROP DEFAULT,
+ALTER COLUMN "soldQty" DROP DEFAULT,
+ALTER COLUMN "soldUnit" DROP DEFAULT;

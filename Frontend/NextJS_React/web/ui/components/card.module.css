@@ -1,0 +1,63 @@
+/* ============================================
+   CARD COMPONENT - Mobile First
+   ============================================ */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: var(--transition);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.header {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+@media (min-width: 768px) {
+  .header {
+    padding: var(--space-5);
+  }
+}
+
+.title {
+  font-size: var(--font-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text);
+  margin: 0;
+  line-height: var(--leading-tight);
+}
+
+@media (min-width: 768px) {
+  .title {
+    font-size: var(--font-xl);
+  }
+}
+
+.body {
+  padding: var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .body {
+    padding: var(--space-5);
+  }
+}
+
+.footer {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+@media (min-width: 768px) {
+  .footer {
+    padding: var(--space-5);
+  }
+}

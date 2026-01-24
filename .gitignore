@@ -1,0 +1,20 @@
+# Node / Next
+node_modules/
+.next/
+dist/
+build/
+out/
+coverage/
+*.log
+.env
+.env.local
+
+# Tauri / Rust
+target/
+src-tauri/target/
+*.exe
+*.msi
+
+# IDE
+.vscode/
+.DS_Store

@@ -1,0 +1,24 @@
+services:
+  ferreteria_db:
+    image: postgres:16-alpine
+    container_name: ferreteria_chavalos_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferre
+      POSTGRES_PASSWORD: ferre123
+      POSTGRES_DB: ferreteria
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-local_ferreteria_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferre -d ferreteria"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-local_ferreteria_pgdata:
+    external: true
