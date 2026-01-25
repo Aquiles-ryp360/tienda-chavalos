@@ -369,17 +369,15 @@ Write-Host ""
 
 
 # ========= [2.5] BACKUP AUTOMÁTICO =========
-if ($doBackupOnStart) {
-  Step "[2.5/4] Backup automático (productos/ventas)..."
-  try {
-    $result = Backup-KeyData -Container $pgContainerName -BackupDir $backupDir -KeepLast $backupKeepLast
-    Ok "Backup KEY OK: $($result.Zip)"
-    Info "Tablas incluidas: $($result.Tables)"
-  } catch {
-    Warn "Backup KEY falló (no detengo el arranque): $($_.Exception.Message)"
-  }
-  Write-Host ""
+Step "[2.5/4] Backup automático (productos/ventas)..."
+try {
+  pwsh -NoProfile -ExecutionPolicy Bypass -File "D:\Aquiles\Backups_Chavalos\backup-key-chavalos.ps1"
+  Ok "Backup KEY terminado"
+} catch {
+  Warn "Backup KEY falló (no detengo arranque): $($_.Exception.Message)"
 }
+Write-Host ""
+
 
 
 # ========= [3] IP LAN =========

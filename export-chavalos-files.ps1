@@ -1,95 +1,186 @@
-# export-chavalos-files.ps1
-# Exporta archivos clave del proyecto y crea un ZIP manteniendo estructura de carpetas.
+<# 
+Export-Chavalos-SupportPack.ps1
+Crea un ZIP con el código relevante (Frontend Next + Backend + Prisma + configs),
+excluyendo carpetas pesadas y archivos sensibles.
+Ejecutar en la raíz del repo.
+#>
+
+param(
+  [string]$Root = (Get-Location).Path,
+  [string]$OutDir = (Join-Path (Get-Location).Path "_EXPORTS"),
+  [switch]$IncludeTauri # si quieres incluir ChavalosServerApp/src-tauri y src (normalmente NO hace falta)
+)
 
 $ErrorActionPreference = "Stop"
 
-# 1) Ajusta si tu raíz del proyecto es otra
-$root = "D:\Aquiles\Tienda_Chavalos_Virtual_web"
+# ==== Ajustes ====
+$excludeDirNames = @(
+  "node_modules",".git",".next","dist","build","target",".vscode",".idea",
+  ".turbo",".cache","coverage","out","tmp","temp",".pnpm-store",
+  "_EXPORTS" # no re-empaques zips viejos
+)
 
-if (-not (Test-Path $root)) {
-  throw "No existe la ruta root: $root"
+# Archivos sensibles (se omiten)
+$excludeFilePatterns = @(
+  ".env", ".env.*", "*.pem", "*.pfx", "*.p12", "*.key", "*id_rsa*", "*id_dsa*",
+  "*secrets*", "*secret*", "*credentials*", "*passwd*", "*password*"
+)
+
+# Extensiones que SÍ copiamos (código + configs + prisma + css + docs)
+$includeExt = @(
+  ".ts",".tsx",".js",".mjs",".cjs",".json",".css",".scss",
+  ".md",".txt",".prisma",".sql",".yml",".yaml",".toml",".lock"
+)
+
+# Directorios que queremos (robusto para este bug)
+$includeDirs = @(
+  "Frontend/NextJS_React/web/app",         # pages + api (incluye caja y /api/sales)
+  "Frontend/NextJS_React/web/ui",          # components + pages (CajaView, stepper, slider)
+  "Frontend/NextJS_React/web/lib",         # prisma/db/helpers
+  "Frontend/NextJS_React/web/styles",
+  "Frontend/NextJS_React/web/prisma",      # schema + migrations
+  "Backend",                               # API/Validaciones/Autenticacion si lo usas
+  "Base_de_datos/Prisma",                  # schema alterno (por si está vivo)
+  "Despliegue/Hosting"                     # docker-compose / postgres-local (por contexto)
+)
+
+# Archivos sueltos útiles (si existen)
+$includeFiles = @(
+  "Frontend/NextJS_React/web/package.json",
+  "Frontend/NextJS_React/web/package-lock.json",
+  "Frontend/NextJS_React/web/pnpm-lock.yaml",
+  "Frontend/NextJS_React/web/yarn.lock",
+  "Frontend/NextJS_React/web/tsconfig.json",
+  "Frontend/NextJS_React/web/next.config.js",
+  "Frontend/NextJS_React/web/next.config.mjs",
+  "Frontend/NextJS_React/web/tailwind.config.js",
+  "Frontend/NextJS_React/web/postcss.config.js",
+  "Frontend/NextJS_React/web/middleware.ts",
+  "Frontend/NextJS_React/web/middleware.js",
+
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock"
+)
+
+if ($IncludeTauri) {
+  $includeDirs += @(
+    "ChavalosServerApp/src",
+    "ChavalosServerApp/src-tauri"
+  )
 }
 
+# ==== Helpers ====
+function Test-IsExcludedDir([string]$fullPath) {
+  foreach ($d in $excludeDirNames) {
+    if ($fullPath -match [regex]::Escape("\$d\") -or $fullPath.EndsWith("\$d")) { return $true }
+  }
+  return $false
+}
+
+function Test-IsSensitiveFile([string]$nameOrPath) {
+  foreach ($p in $excludeFilePatterns) {
+    if ($nameOrPath -like $p) { return $true }
+  }
+  return $false
+}
+
+function Test-IncludeExtension([string]$path) {
+  $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+  return $includeExt -contains $ext
+}
+
+function Copy-PreserveRelative([string]$src, [string]$stageDir) {
+  $rel = $src.Substring($Root.Length).TrimStart('\','/')
+  $dst = Join-Path $stageDir $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
+  Copy-Item -Force -Path $src -Destination $dst
+}
+
+# ==== Staging ====
 $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-# 2) ZIP de salida (puedes cambiar el destino)
-$outDir = Join-Path $root "_EXPORTS"
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$zipPath = Join-Path $outDir "chavalos_export_$ts.zip"
-
-# 3) Lista de archivos a exportar (relativos a $root)
-$files = @(
-  # Backend (reglas anti-duplicados)
-  "Backend\API\products.ts",
-  "Backend\Validaciones\stock.ts",
-
-  # Next API (traduce errores + búsqueda para sugerencias)
-  "Frontend\NextJS_React\web\app\api\products\route.ts",
-  "Frontend\NextJS_React\web\app\api\products\[id]\route.ts",
-
-  # Prisma (modelo/DB)
-  "Frontend\NextJS_React\web\prisma\schema.prisma",
-
-  # Lib DB/Prisma
-  "Frontend\NextJS_React\web\lib\prisma.ts",
-  "Frontend\NextJS_React\web\lib\db.ts",
-
-  # UI (form + modal productos)
-  "Frontend\NextJS_React\web\ui\pages\admin\ProductFormView.tsx",
-  "Frontend\NextJS_React\web\ui\pages\productos\ProductosView.tsx"
-)
-
-# (Opcional) estilos si existen (no fallará si no están)
-$optional = @(
-  "Frontend\NextJS_React\web\ui\pages\admin\product-form.module.css",
-  "Frontend\NextJS_React\web\ui\pages\productos\productos.module.css"
-)
-
-# 4) Staging temporal con estructura
-$stage = Join-Path $env:TEMP "chavalos_export_stage_$ts"
+$stage = Join-Path $OutDir ("_staging_supportpack_" + $ts)
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-function Copy-RelFile($relPath) {
-  $src = Join-Path $root $relPath
-  if (-not (Test-Path $src)) {
-    Write-Warning "NO ENCONTRADO: $relPath"
-    return $false
+$copied = New-Object System.Collections.Generic.List[string]
+$missing = New-Object System.Collections.Generic.List[string]
+
+Write-Host "==> Root: $Root"
+Write-Host "==> Staging: $stage"
+Write-Host ""
+
+# ==== Copiar directorios ====
+foreach ($relDir in $includeDirs) {
+  $dir = Join-Path $Root $relDir
+  if (-not (Test-Path $dir)) {
+    $missing.Add("DIR: $relDir") | Out-Null
+    continue
   }
 
-  $dest = Join-Path $stage $relPath
-  $destDir = Split-Path $dest -Parent
-  New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-  Copy-Item -Force $src $dest
-  Write-Host "OK: $relPath"
-  return $true
+  Write-Host "-> Escaneando dir: $relDir"
+  Get-ChildItem -Path $dir -Recurse -File -Force | ForEach-Object {
+    $full = $_.FullName
+
+    if (Test-IsExcludedDir $full) { return }
+    if (Test-IsSensitiveFile $_.Name) { return }
+    if (Test-IsSensitiveFile $full) { return }
+    if (-not (Test-IncludeExtension $full)) { return }
+
+    Copy-PreserveRelative -src $full -stageDir $stage
+    $copied.Add($full.Substring($Root.Length).TrimStart('\','/')) | Out-Null
+  }
 }
 
-Write-Host "== Copiando archivos a staging: $stage =="
+# ==== Copiar archivos sueltos ====
+foreach ($relFile in $includeFiles) {
+  $src = Join-Path $Root $relFile
+  if (-not (Test-Path $src)) {
+    $missing.Add("FILE: $relFile") | Out-Null
+    continue
+  }
 
-$found = 0
-foreach ($f in $files) {
-  if (Copy-RelFile $f) { $found++ }
+  if (Test-IsSensitiveFile (Split-Path $src -Leaf)) { continue }
+  if (Test-IsSensitiveFile $src) { continue }
+  # permitimos lock/json aunque extensión ya esté en lista
+  if (-not (Test-IncludeExtension $src)) { continue }
+
+  Copy-PreserveRelative -src $src -stageDir $stage
+  $copied.Add($relFile) | Out-Null
+  Write-Host "OK file: $relFile"
 }
 
-foreach ($f in $optional) {
-  Copy-RelFile $f | Out-Null
-}
+# ==== Manifest ====
+$manifestPath = Join-Path $stage "SUPPORTPACK_MANIFEST.txt"
+$copiedSorted = $copied | Sort-Object
+$missingSorted = $missing | Sort-Object
 
-if ($found -eq 0) {
-  throw "No se encontró ningún archivo de la lista principal. Revisa que `\$root` esté bien."
-}
+@"
+Chavalos Support Pack
+Timestamp: $ts
+Root: $Root
 
-# 5) Comprimir
+== COPIED FILES (count: $($copiedSorted.Count)) ==
+$($copiedSorted -join "`r`n")
+
+== MISSING (NOT FOUND) ==
+$($missingSorted -join "`r`n")
+"@ | Set-Content -Encoding UTF8 -Path $manifestPath
+
+# ==== ZIP ====
+$zipPath = Join-Path $OutDir ("chavalos_supportpack_" + $ts + ".zip")
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -Force
 
-# 6) Limpiar staging
+# Cleanup staging (si quieres dejar staging, comenta estas 2 líneas)
 Remove-Item -Recurse -Force $stage
 
 Write-Host ""
-Write-Host "✅ ZIP creado:"
+Write-Host "LISTO ✅ ZIP generado:"
 Write-Host $zipPath
 Write-Host ""
-Write-Host "Súbelo aquí en el chat y ya reviso todo con diffs exactos."
+Write-Host "Nota: El pack EXCLUYE .env y llaves/credenciales por seguridad."
