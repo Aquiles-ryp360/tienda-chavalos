@@ -18,20 +18,34 @@ function normalizeQty(value: string | number, options: { step: number; min: numb
   // Clamp al mínimo
   let qty = Math.max(min, parsed)
 
-  // Cuantizar a múltiplos del step
-  qty = Math.round(qty / step) * step
+  // Para unidades discretas (step entero), cuantizar a múltiplos del step.
+  // Para unidades decimales (step < 1), NO forzar múltiplos: solo redondear a 3 decimales.
+  const isDiscrete = step % 1 === 0
 
-  // Redondear para evitar errores de punto flotante
-  const decimals = step % 1 === 0 ? 0 : String(step).split('.')[1]?.length || 0
-  qty = parseFloat(qty.toFixed(decimals))
+  if (isDiscrete) {
+    qty = Math.round(qty / step) * step
+    qty = parseFloat(qty.toFixed(0))
+    return qty
+  }
 
+  qty = roundToDecimals(qty, 3)
   return qty
 }
 
 // Determinar si una unidad permite decimales
 function determineAllowsDecimals(unit: string): boolean {
-  const lowerUnit = unit.toLowerCase()
-  return ['kg', 'kilo', 'lt', 'l', 'm', 'g', 'ml'].includes(lowerUnit)
+  const u = (unit || '').toString().trim().toLowerCase()
+
+  // Soporta enum ProductUnit (KILO/LITRO/METRO/CAJA) y formas abreviadas
+  // Nota: si en el futuro agregas más unidades fraccionables, añádelas aquí.
+  const decimalUnits = new Set([
+    'kilo', 'kg', 'g', 'gramo', 'gr',
+    'litro', 'l', 'lt', 'ml',
+    'metro', 'm',
+    'caja', 'paquete',
+  ])
+
+  return decimalUnits.has(u)
 }
 
 // Determinar el step adecuado para una unidad
@@ -39,7 +53,10 @@ function determineStep(unit: string, allowsDecimals: boolean): number {
   if (!allowsDecimals) return 1
   
   // Para unidades fraccionables, usar 0.5 (medio kilo, medio litro, etc.)
-  return 0.5
+  const u = unit.toLowerCase()
+  if (u === 'paquete') return 0.5   // o 0.25 si quieres
+  if (u === 'caja')  return 0.5
+  
 }
 
 interface ProductPresentation {
@@ -151,7 +168,7 @@ export function CajaView({ user }: CajaViewProps) {
   }
 
   const unitAllowsDecimals = (unit: string): boolean => {
-    return ['METRO', 'LITRO', 'KILO'].includes(unit)
+    return ['METRO', 'LITRO', 'KILO', 'CAJA'].includes(unit)
   }
 
   const addToCart = (product: Product) => {
@@ -167,10 +184,11 @@ export function CajaView({ user }: CajaViewProps) {
       const unit = defaultPresentation?.unit || product.unit
       const allowsDecimals = determineAllowsDecimals(unit)
       const step = determineStep(unit, allowsDecimals)
-      
+      const min = allowsDecimals ? 0.001 : 1
+
       const currentQty = existing.soldQty
       const newQty = currentQty + step
-      const normalized = normalizeQty(newQty, { step, min: step })
+      const normalized = normalizeQty(newQty, { step, min })
       
       if (normalized) {
         setCart(
@@ -563,9 +581,10 @@ export function CajaView({ user }: CajaViewProps) {
                                     const newUnit = newPresentation?.unit || item.product.unit
                                     const allowsDecimals = determineAllowsDecimals(newUnit)
                                     const step = determineStep(newUnit, allowsDecimals)
-                                    
+                                    const min = allowsDecimals ? 0.001 : 1
+
                                     // Normalizar la cantidad actual con el nuevo step
-                                    const normalized = normalizeQty(item.soldQty, { step, min: step }) || step
+                                    const normalized = normalizeQty(item.soldQty, { step, min }) || step
                                     
                                     setCart(
                                       cart.map((cartItem, cartIdx) => {
@@ -617,7 +636,7 @@ export function CajaView({ user }: CajaViewProps) {
                                 onClick={() => {
                                   const allowsDecimals = determineAllowsDecimals(unit)
                                   const step = determineStep(unit, allowsDecimals)
-                                  const min = step
+                                  const min = allowsDecimals ? 0.001 : 1
                                   
                                   // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
                                   const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min }) || item.soldQty
@@ -672,7 +691,7 @@ export function CajaView({ user }: CajaViewProps) {
                                   onBlur={() => {
                                     const allowsDecimals = determineAllowsDecimals(unit)
                                     const step = determineStep(unit, allowsDecimals)
-                                    const min = step
+                                    const min = allowsDecimals ? 0.001 : 1
                                     
                                     const currentDraft = item.draftQty
                                     
@@ -739,7 +758,7 @@ export function CajaView({ user }: CajaViewProps) {
                                 onClick={() => {
                                   const allowsDecimals = determineAllowsDecimals(unit)
                                   const step = determineStep(unit, allowsDecimals)
-                                  const min = step
+                                  const min = allowsDecimals ? 0.001 : 1
                                   
                                   // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
                                   const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min }) || item.soldQty

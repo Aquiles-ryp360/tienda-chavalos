@@ -86,7 +86,13 @@ export interface InsufficientStockError {
  * Determinar si una unidad permite decimales
  */
 function unitAllowsDecimals(unit: ProductUnit | string): boolean {
-  const decimalUnits = [ProductUnit.METRO, ProductUnit.LITRO, ProductUnit.KILO]
+  const decimalUnits = [
+    ProductUnit.METRO, 
+    ProductUnit.LITRO, 
+    ProductUnit.KILO, 
+    ProductUnit.CAJA,
+    ProductUnit.PAQUETE,
+  ]
   return decimalUnits.some(u => u === unit)
 }
 
