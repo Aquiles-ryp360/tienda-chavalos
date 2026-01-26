@@ -409,7 +409,7 @@ export async function suggestProducts(query: { search: string; isActive?: boolea
 
   const items = await prisma.product.findMany({
     where,
-    select: { id: true, sku: true, name: true, isActive: true },
+    select: { id: true, sku: true, name: true, unit: true, isActive: true },
     orderBy: { name: 'asc' },
     take: query.limit ?? 8,
   })

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireAuth, requireAdmin } from '@/lib/auth-session'
 import * as productsAPI from '@backend/API/products'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 /**
  * GET /api/products - Listar y buscar productos
  */
@@ -16,6 +19,8 @@ export async function GET(request: NextRequest) {
     const offset = parseInt(searchParams.get('offset') || '0')
 
     //.............................................
+    const isActive = isActiveParam === 'true' ? true : isActiveParam === 'false' ? false : undefined
+
     const suggest = searchParams.get('suggest') === '1'
 
     if (suggest && search) {
@@ -24,8 +29,6 @@ export async function GET(request: NextRequest) {
     } 
     //.............................................
 
-
-    const isActive = isActiveParam === 'true' ? true : isActiveParam === 'false' ? false : undefined
 
     const result = await productsAPI.searchProducts({
       search,

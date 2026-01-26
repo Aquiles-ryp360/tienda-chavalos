@@ -4,10 +4,12 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Header } from '@/ui/components/Header'
 import { Button } from '@/ui/components/Button'
 import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
+import { CenteredAlertModal } from '@/ui/components/CenteredAlertModal'
 import styles from './product-form.module.css'
 
 const PRODUCT_UNITS = ['UNIDAD', 'METRO', 'LITRO', 'KILO', 'CAJA', 'PAQUETE', 'ROLLO']
@@ -60,7 +62,17 @@ interface ProductFormViewProps {
 
 type Tab = 'general' | 'presentations' | 'price-history'
 
+function useDebouncedValue<T>(value: T, delay = 350) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
+  return debounced
+}
+
 export function ProductFormView({ user, productId }: ProductFormViewProps) {
+  const router = useRouter()
   const { notify } = useToast()
   const [activeTab, setActiveTab] = useState<Tab>('general')
   const [product, setProduct] = useState<Product | null>(null)
@@ -105,6 +117,12 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     reason: '',
   })
 
+  const [alert, setAlert] = useState<{ open: boolean; type: 'success' | 'error'; message: string }>({
+    open: false,
+    type: 'success',
+    message: '',
+  })
+
   useEffect(() => {
     if (productId) {
       loadProduct()
@@ -114,7 +132,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
 
   // Sugerencias / alerta de duplicado por nombre (case-insensitive)
 
-  const debouncedName = useDebouncedValue(form.name, 350)
+  const debouncedName = useDebouncedValue(name, 350)
 
   useEffect(() => {
     const q = normalizeName(debouncedName)
@@ -135,7 +153,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         const items = Array.isArray(data) ? data : (data.items ?? [])
         setNameSuggestions(items)
 
-        const key = normalizeName(form.name).toLowerCase()
+        const key = normalizeName(name).toLowerCase()
         const dup = items.find((p: any) => normalizeName(p.name).toLowerCase() === key) ?? null
         setNameDuplicate(dup)
       })
@@ -197,7 +215,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   const loadProduct = async () => {
     try {
       setLoading(true)
-      const res = await fetch(`/api/products/${productId}`)
+      const res = await fetch(`/api/products/${productId}`, { cache: 'no-store' })
       const data = await res.json()
 
       if (data.id) {
@@ -231,21 +249,26 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
 
   const handleSaveProduct = async () => {
     const normalizedName = normalizeName(name)
-    if (
-      nameDuplicate &&
-      nameDuplicate.id !== (productId || null) &&
-      normalizeName(nameDuplicate.name).toLowerCase() === normalizedName.toLowerCase()
-    ) {
-      notify({
-        type: 'warning',
-        title: 'Nombre duplicado',
-        message: `Ya existe: ${nameDuplicate.name} (SKU ${nameDuplicate.sku}). Edita ese producto en vez de duplicarlo.`,
-      })
+
+    if (!sku.trim() || !name.trim() || !price || !unit) {
+      setAlert({ open: true, type: 'error', message: 'Completa SKU, nombre, unidad y precio.' })
       return
     }
 
-    if (!sku.trim() || !name.trim() || !price) {
-      notify({ type: 'warning', title: 'Campos incompletos', message: 'Por favor completa los campos requeridos' })
+    const priceN = parseFloat(price)
+    const stockN = parseFloat(stock || '0')
+    const minStockN = parseFloat(minStock || '0')
+
+    if (Number.isNaN(priceN) || priceN < 0) {
+      setAlert({ open: true, type: 'error', message: 'Precio debe ser un número mayor o igual a 0.' })
+      return
+    }
+    if (Number.isNaN(stockN) || stockN < 0) {
+      setAlert({ open: true, type: 'error', message: 'Stock debe ser un número mayor o igual a 0.' })
+      return
+    }
+    if (Number.isNaN(minStockN) || minStockN < 0) {
+      setAlert({ open: true, type: 'error', message: 'Stock mínimo debe ser >= 0.' })
       return
     }
 
@@ -258,42 +281,43 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
         body: JSON.stringify({
           sku: sku.trim(),
-          name: normalizeName(name),
+          name: normalizedName,
           description: description.trim() || null,
           unit,
-          price: parseFloat(price),
-          stock: parseFloat(stock),
-          minStock: parseFloat(minStock),
+          price: priceN,
+          stock: stockN,
+          minStock: minStockN,
         }),
       })
 
       const data = await res.json()
 
       if (!res.ok) {
-        if (res.status === 409 && data?.existing) {
-          notify({
-            type: 'warning',
-            title: 'Nombre duplicado',
-            message: `Ya existe: ${data.existing.name} (SKU ${data.existing.sku}).`,
-          })
-          return
-        }
-        notify({ type: 'error', title: 'Error al guardar', message: data.error || 'No se pudo guardar el producto' })
+        const msg =
+          res.status === 409 && data?.existing
+            ? `Ya existe: ${data.existing.name} (SKU ${data.existing.sku}).`
+            : data.error || 'No se pudo guardar el producto'
+        setAlert({ open: true, type: 'error', message: msg })
         return
       }
 
-      notify({ type: 'success', title: productId ? 'Producto actualizado' : 'Producto creado', message: 'Los cambios se guardaron correctamente' })
-      if (!productId) {
-        // Redirigir a editar el nuevo producto
+      setAlert({
+        open: true,
+        type: 'success',
+        message: productId ? 'Producto actualizado correctamente.' : 'Producto creado correctamente.',
+      })
+      router.refresh()
+      if (!productId && data.id) {
         window.location.href = `/admin/productos/${data.id}`
-      } else {
+      } else if (productId) {
         loadProduct()
       }
     } catch (error) {
       console.error('Error guardando producto:', error)
-      notify({ type: 'error', title: 'Error al guardar', message: 'No se pudo completar la operación' })
+      setAlert({ open: true, type: 'error', message: 'No se pudo completar la operación' })
     } finally {
       setSaving(false)
     }
@@ -548,6 +572,13 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   return (
     <>
       <Header user={user} />
+      <CenteredAlertModal
+        open={alert.open}
+        type={alert.type}
+        title={alert.type === 'success' ? 'Éxito' : 'Error'}
+        message={alert.message}
+        onClose={() => setAlert((p) => ({ ...p, open: false }))}
+      />
       <div className={styles.container}>
         <div className={styles.formCard}>
           <h1 className={styles.title}>Editar Producto: {name}</h1>

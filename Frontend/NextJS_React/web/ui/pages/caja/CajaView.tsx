@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
@@ -8,55 +8,68 @@ import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
 import styles from './caja.module.css'
 
-// Utilidad para normalizar cantidades y evitar errores de punto flotante
-function normalizeQty(value: string | number, options: { step: number; min: number }): number | null {
-  const { step, min } = options
-  const parsed = typeof value === 'string' ? parseFloat(value) : value
-
-  if (isNaN(parsed)) return null
-
-  // Clamp al mínimo
-  let qty = Math.max(min, parsed)
-
-  // Para unidades discretas (step entero), cuantizar a múltiplos del step.
-  // Para unidades decimales (step < 1), NO forzar múltiplos: solo redondear a 3 decimales.
-  const isDiscrete = step % 1 === 0
-
-  if (isDiscrete) {
-    qty = Math.round(qty / step) * step
-    qty = parseFloat(qty.toFixed(0))
-    return qty
-  }
-
-  qty = roundToDecimals(qty, 3)
-  return qty
-}
+// Unidades que permiten decimales (consistente con backend)
+const FRACTIONABLE_UNITS = new Set(['KILO', 'LITRO', 'METRO', 'CAJA', 'PAQUETE', 'ROLLO'])
 
 // Determinar si una unidad permite decimales
-function determineAllowsDecimals(unit: string): boolean {
-  const u = (unit || '').toString().trim().toLowerCase()
-
-  // Soporta enum ProductUnit (KILO/LITRO/METRO/CAJA) y formas abreviadas
-  // Nota: si en el futuro agregas más unidades fraccionables, añádelas aquí.
-  const decimalUnits = new Set([
-    'kilo', 'kg', 'g', 'gramo', 'gr',
-    'litro', 'l', 'lt', 'ml',
-    'metro', 'm',
-    'caja', 'paquete',
-  ])
-
-  return decimalUnits.has(u)
+function unitAllowsDecimals(unit: string): boolean {
+  return FRACTIONABLE_UNITS.has((unit || '').toUpperCase())
 }
 
-// Determinar el step adecuado para una unidad
-function determineStep(unit: string, allowsDecimals: boolean): number {
-  if (!allowsDecimals) return 1
-  
-  // Para unidades fraccionables, usar 0.5 (medio kilo, medio litro, etc.)
-  const u = unit.toLowerCase()
-  if (u === 'paquete') return 0.5   // o 0.25 si quieres
-  if (u === 'caja')  return 0.5
-  
+// Determinar el step para botones +/-
+function getStep(unit: string): number {
+  return unitAllowsDecimals(unit) ? 0.5 : 1
+}
+
+// Redondear de forma segura a 3 decimales para evitar errores de punto flotante
+function roundTo3Decimals(num: number): number {
+  return Math.round((num + Number.EPSILON) * 1000) / 1000
+}
+
+// Normalizar cantidades: permite opcionalmente mantener decimales sin forzar múltiplos de step
+function normalizeQty(
+  value: string | number,
+  options: { step: number; min: number; allowAnyDecimal?: boolean }
+): number | null {
+  const { step, min, allowAnyDecimal = false } = options
+  const parsed =
+    typeof value === 'string' ? Number(String(value).replace(',', '.')) : Number(value)
+
+  if (!Number.isFinite(parsed)) return null
+
+  const allowsDecimals = step < 1
+  let qty = Math.max(min, parsed)
+
+  // Solo ajustar a múltiplos del step cuando no se permiten decimales libres (botones +/-)
+  if (!allowAnyDecimal) {
+    qty = Math.round(qty / step) * step
+  }
+
+  // Redondear siempre a 3 decimales para evitar ruido flotante
+  qty = roundTo3Decimals(qty)
+
+  // Para unidades discretas, forzar entero
+  if (!allowsDecimals && !Number.isInteger(qty)) {
+    qty = Math.round(qty)
+  }
+
+  if (qty < min) qty = min
+
+  return qty > 0 ? qty : null
+}
+
+// Alias usados en el resto del archivo (legado)
+const determineAllowsDecimals = (unit: string) => unitAllowsDecimals(unit)
+const determineStep = (unit: string, allowsDecimals?: boolean) =>
+  getStep(unit)
+
+// Detectar si una presentación representa la unidad base del producto
+function isBasePresentation(
+  presentation: ProductPresentation | null | undefined,
+  product?: Product
+): boolean {
+  if (!presentation || !product) return false
+  return presentation.isDefault && Number(presentation.factorToBase ?? 1) === 1
 }
 
 interface ProductPresentation {
@@ -82,13 +95,16 @@ interface Product {
 
 interface CartItem {
   product: Product
+  productId?: string
   presentationId: string | null
   presentation: ProductPresentation | null
   soldQty: number
+  draftQty?: string
   adjustedUnitPrice?: number
   priceAdjustNote?: string
   priceAdjusted?: boolean
-  draftQty?: string // Estado temporal del input para permitir edición
+  unitType?: string
+  presentationUnit?: string
 }
 
 interface InsufficientStockError {
@@ -120,6 +136,7 @@ export function CajaView({ user }: CajaViewProps) {
   const [insufficientStockError, setInsufficientStockError] = useState<InsufficientStockError | null>(null)
   const [overrideNote, setOverrideNote] = useState('')
   const [cartOpen, setCartOpen] = useState(false) // Estado para abrir/cerrar carrito en móvil
+  const [cartHydrated, setCartHydrated] = useState(false)
 
   // Bloquear scroll del body cuando el carrito está abierto
   useEffect(() => {
@@ -148,9 +165,38 @@ export function CajaView({ user }: CajaViewProps) {
     reason: ''
   })
 
+  // Hidratar carrito desde localStorage (permite mantener items entre recargas)
+  useEffect(() => {
+    try {
+      const stored = typeof window !== 'undefined' ? localStorage.getItem('cajaCart') : null
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          setCart(parsed)
+        }
+      }
+    } catch (error) {
+      console.warn('No se pudo leer carrito de localStorage', error)
+    } finally {
+      setCartHydrated(true)
+    }
+  }, [])
+
+  // Persistir carrito en localStorage
+  useEffect(() => {
+    if (!cartHydrated) return
+    try {
+      localStorage.setItem('cajaCart', JSON.stringify(cart))
+    } catch (error) {
+      console.warn('No se pudo guardar carrito en localStorage', error)
+    }
+  }, [cart, cartHydrated])
+
   useEffect(() => {
     loadProducts()
   }, [search])
+
+  const productsById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
 
   const loadProducts = async () => {
     try {
@@ -159,7 +205,7 @@ export function CajaView({ user }: CajaViewProps) {
       params.append('isActive', 'true')
       params.append('limit', '20')
 
-      const res = await fetch(`/api/products?${params}`)
+      const res = await fetch(`/api/products?${params}`, { cache: 'no-store' })
       const data = await res.json()
       setProducts(data.products.filter((p: Product) => p.stock > 0))
     } catch (error) {
@@ -167,21 +213,120 @@ export function CajaView({ user }: CajaViewProps) {
     }
   }
 
-  const unitAllowsDecimals = (unit: string): boolean => {
-    return ['METRO', 'LITRO', 'KILO', 'CAJA'].includes(unit)
+  // Sincronizar carrito cuando se refresca la lista de productos (unidad/presentaciones pueden cambiar)
+  useEffect(() => {
+    if (!products.length || !cartHydrated) return
+
+    setCart((current) => {
+      if (!current.length) return current
+
+      const updatedCart = current.map((item) => {
+        const updatedProduct = productsById.get(item.product.id)
+        if (!updatedProduct) return item
+
+        // Mantener presentación elegida; si no existe, caer a default del producto
+        const updatedPresentation =
+          item.presentationId
+            ? updatedProduct.presentations?.find((p) => p.id === item.presentationId) ||
+              item.presentation ||
+              null
+            : item.presentation ||
+              updatedProduct.presentations?.find((p) => p.isDefault) ||
+              updatedProduct.presentations?.[0] ||
+              null
+
+        const baseLike = isBasePresentation(updatedPresentation, updatedProduct)
+        const effectiveUnit =
+          baseLike
+            ? updatedProduct.unit || item.unitType || item.product.unit || 'UNIDAD'
+            : updatedPresentation?.unit ||
+              item.presentationUnit ||
+              item.unitType ||
+              updatedProduct.unit ||
+              item.product.unit ||
+              'UNIDAD'
+
+        return {
+          ...item,
+          product: updatedProduct,
+          presentation: updatedPresentation,
+          presentationId: updatedPresentation ? updatedPresentation.id : item.presentationId ?? null,
+          unitType: effectiveUnit,
+          presentationUnit: updatedPresentation?.unit ?? item.presentationUnit,
+        }
+      })
+
+      return updatedCart
+    })
+  }, [products, productsById, cartHydrated])
+
+  const getEffectivePresentation = (item: CartItem): ProductPresentation | null => {
+    const liveProduct = productsById.get(item.product.id)
+    if (item.presentationId) {
+      return (
+        liveProduct?.presentations?.find((p) => p.id === item.presentationId) ||
+        item.presentation ||
+        null
+      )
+    }
+    return (
+      item.presentation ||
+      liveProduct?.presentations?.find((p) => p.isDefault) ||
+      liveProduct?.presentations?.[0] ||
+      null
+    )
+  }
+
+  const getEffectiveUnit = (item: CartItem): string => {
+    const liveProduct = productsById.get(item.product.id)
+    const pres = getEffectivePresentation(item)
+    const baseLike = pres ? isBasePresentation(pres, liveProduct || item.product) : false
+    const hasChosenPresentation = !!pres && !baseLike
+
+    if (hasChosenPresentation) {
+      return (
+        pres?.unit ||
+        item.presentationUnit ||
+        item.unitType ||
+        liveProduct?.unit ||
+        item.product.unit ||
+        'UNIDAD'
+      )
+    }
+
+    return (
+      liveProduct?.unit ||
+      item.product.unit ||
+      item.unitType ||
+      pres?.unit ||
+      item.presentationUnit ||
+      'UNIDAD'
+    )
   }
 
   const addToCart = (product: Product) => {
     // Obtener presentación por defecto
     const defaultPresentation = product.presentations?.find((p) => p.isDefault) || product.presentations?.[0] || null
+    const baseLike = isBasePresentation(defaultPresentation, product)
+    const targetPresentationId = baseLike ? null : defaultPresentation?.id || null
+    const targetPresentation = baseLike ? null : defaultPresentation || null
 
-    const existing = cart.find(
-      (item) => item.product.id === product.id && item.presentationId === (defaultPresentation?.id || null)
-    )
+    const existing = cart.find((item) => {
+      if (item.product.id !== product.id) return false
+      if (targetPresentationId) return item.presentationId === targetPresentationId
+
+      // Si buscamos la unidad base, considerar coincidencia aunque el item tenga la presentación default antigua
+      const itemPresentation =
+        item.presentationId && product.presentations
+          ? product.presentations.find((p) => p.id === item.presentationId) || item.presentation
+          : item.presentation
+
+      return !item.presentationId || isBasePresentation(itemPresentation, product)
+    })
 
     if (existing) {
       // Incrementar cantidad existente
-      const unit = defaultPresentation?.unit || product.unit
+      const unit = targetPresentation?.unit || product.unit
       const allowsDecimals = determineAllowsDecimals(unit)
       const step = determineStep(unit, allowsDecimals)
       const min = allowsDecimals ? 0.001 : 1
@@ -194,11 +339,11 @@ export function CajaView({ user }: CajaViewProps) {
         setCart(
           cart.map((item) => {
             if (item.product.id === product.id && item.presentationId === (defaultPresentation?.id || null)) {
-              return {
-                ...item,
-                soldQty: normalized,
-                draftQty: String(normalized),
-              }
+            return {
+              ...item,
+              soldQty: normalized,
+              draftQty: String(normalized),
+            }
             }
             return item
           })
@@ -206,7 +351,7 @@ export function CajaView({ user }: CajaViewProps) {
       }
     } else {
       // Agregar nueva línea al carrito
-      const unit = defaultPresentation?.unit || product.unit
+      const unit = targetPresentation?.unit || product.unit
       const allowsDecimals = determineAllowsDecimals(unit)
       const step = determineStep(unit, allowsDecimals)
       const initialQty = step // Comenzar con el step mínimo
@@ -215,10 +360,12 @@ export function CajaView({ user }: CajaViewProps) {
         ...cart,
         {
           product,
-          presentationId: defaultPresentation?.id || null,
-          presentation: defaultPresentation || null,
+          presentationId: targetPresentationId,
+          presentation: targetPresentation,
           soldQty: initialQty,
           draftQty: String(initialQty),
+          unitType: unit,
+          presentationUnit: targetPresentation?.unit || undefined,
         },
       ])
     }
@@ -319,9 +466,9 @@ export function CajaView({ user }: CajaViewProps) {
     if (item.adjustedUnitPrice !== undefined) {
       return item.adjustedUnitPrice
     }
-    // Sino, usar el precio calculado de la presentación
-    if (!item.presentation) return 0
-    return item.presentation.computedUnitPrice
+    const pres = getEffectivePresentation(item)
+    if (!pres) return 0
+    return pres.computedUnitPrice
   }
 
   const subtotal = cart.reduce((sum, item) => {
@@ -533,11 +680,17 @@ export function CajaView({ user }: CajaViewProps) {
                   <div className={styles.cartBody}>
                     <div className={styles.cartItemsList}>
                       {cart.map((item, idx) => {
+                        const effectivePresentation = getEffectivePresentation(item)
                         const unitPrice = getUnitPrice(item)
-                        const originalUnitPrice = item.presentation?.computedUnitPrice || 0
-                        const unit = item.presentation?.unit || item.product.unit
+                        const originalUnitPrice = effectivePresentation?.computedUnitPrice || 0
+                        const unit = getEffectiveUnit(item)
                         const isDecimal = unitAllowsDecimals(unit)
                         const subtotalItem = roundToDecimals(unitPrice * item.soldQty, 2)
+                        const selectedPresentationId =
+                          item.presentationId ||
+                          item.product.presentations?.find((p) => p.isDefault)?.id ||
+                          item.product.presentations?.[0]?.id ||
+                          ''
 
                         return (
                           <div key={`${item.product.id}-${item.presentationId}-${idx}`} className={styles.cartItem}>
@@ -546,9 +699,10 @@ export function CajaView({ user }: CajaViewProps) {
                             <div className={styles.cartItemHeader}>
                               <div className={styles.cartItemName}>
                                 {item.product.name}
-                                {item.presentation && item.presentation.name !== item.product.unit && (
+                                {item.presentation && (
                                   <span className={styles.cartItemPresentation}> · {item.presentation.name}</span>
                                 )}
+                                <span className={styles.cartItemPresentation}> · {unit}</span>
                               </div>
                               <button
                                 className={styles.cartItemRemove}
@@ -571,7 +725,7 @@ export function CajaView({ user }: CajaViewProps) {
                             {item.product.presentations && item.product.presentations.length > 1 && (
                               <div className={styles.presentationSelector}>
                                 <select
-                                  value={item.presentationId || ''}
+                                  value={selectedPresentationId}
                                   onChange={(e) => {
                                     const newPresentationId = e.target.value
                                     const newPresentation =
@@ -584,7 +738,7 @@ export function CajaView({ user }: CajaViewProps) {
                                     const min = allowsDecimals ? 0.001 : 1
 
                                     // Normalizar la cantidad actual con el nuevo step
-                                    const normalized = normalizeQty(item.soldQty, { step, min }) || step
+                                    const normalized = normalizeQty(item.soldQty, { step, min, allowAnyDecimal: true }) || min
                                     
                                     setCart(
                                       cart.map((cartItem, cartIdx) => {
@@ -595,6 +749,8 @@ export function CajaView({ user }: CajaViewProps) {
                                             presentation: newPresentation,
                                             soldQty: normalized,
                                             draftQty: String(normalized),
+                                            unitType: newUnit,
+                                            presentationUnit: newPresentation?.unit || undefined,
                                           }
                                         }
                                         return cartItem
@@ -621,7 +777,7 @@ export function CajaView({ user }: CajaViewProps) {
                                   </div>
                                 )}
                                 <div className={styles.priceUnit}>
-                                  {formatMoneyPEN(unitPrice)} / unidad
+                                  {formatMoneyPEN(unitPrice)} / {unit}
                                 </div>
                               </div>
                               <div className={styles.priceSubtotal}>
@@ -639,7 +795,7 @@ export function CajaView({ user }: CajaViewProps) {
                                   const min = allowsDecimals ? 0.001 : 1
                                   
                                   // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min }) || item.soldQty
+                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
                                   const newQty = Math.max(min, currentQty - step)
                                   const normalized = normalizeQty(newQty, { step, min })
                                   
@@ -712,7 +868,7 @@ export function CajaView({ user }: CajaViewProps) {
                                     }
                                     
                                     // Normalizar y aplicar
-                                    const normalized = normalizeQty(currentDraft, { step, min })
+                                    const normalized = normalizeQty(currentDraft, { step, min, allowAnyDecimal: true })
                                     
                                     if (normalized && normalized >= min) {
                                       setCart(
@@ -761,7 +917,7 @@ export function CajaView({ user }: CajaViewProps) {
                                   const min = allowsDecimals ? 0.001 : 1
                                   
                                   // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min }) || item.soldQty
+                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
                                   const newQty = currentQty + step
                                   const normalized = normalizeQty(newQty, { step, min })
                                   
@@ -1060,3 +1216,4 @@ export function CajaView({ user }: CajaViewProps) {
     </>
   )
 }
+

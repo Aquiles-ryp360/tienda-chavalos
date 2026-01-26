@@ -92,6 +92,7 @@ function unitAllowsDecimals(unit: ProductUnit | string): boolean {
     ProductUnit.KILO, 
     ProductUnit.CAJA,
     ProductUnit.PAQUETE,
+    ProductUnit.ROLLO,
   ]
   return decimalUnits.some(u => u === unit)
 }
@@ -100,6 +101,10 @@ function unitAllowsDecimals(unit: ProductUnit | string): boolean {
  * Validar que la cantidad sea correcta según la unidad
  */
 function validateQuantity(qty: number, unit: ProductUnit): { valid: boolean; error?: string } {
+  if (!Number.isFinite(qty)) {
+    return { valid: false, error: 'La cantidad debe ser un número válido' }
+  }
+
   if (qty <= 0) {
     return { valid: false, error: 'La cantidad debe ser mayor a 0' }
   }
@@ -516,4 +521,3 @@ export async function listSales(options: {
 
   return { sales, total }
 }
-
