@@ -1,6 +1,6 @@
 /**
  * ProductFormView.tsx - Formulario para crear/editar productos con presentaciones y tab de cambios de precio
- */
+WhatsApp Image 2026-01-23 at 16.52.23.jpeg */
 'use client'
 
 import { useState, useEffect } from 'react'

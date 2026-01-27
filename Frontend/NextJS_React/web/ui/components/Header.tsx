@@ -71,6 +71,15 @@ export function Header({ user }: HeaderProps) {
           >
             Ventas
           </Link>
+
+          <Link
+            href="/pagos"
+            className={`${styles.navLink} ${
+              pathname === '/pagos' ? styles.active : ''
+            }`}
+          >
+            Pagos
+          </Link>
         </nav>
 
         <div className={styles.userInfo}>

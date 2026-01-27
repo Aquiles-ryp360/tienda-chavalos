@@ -41,6 +41,70 @@ function Test-Admin {
   } catch { return $false }
 }
 
+function Ensure-DockerRunning {
+  param([int]$WaitSeconds = 60)
+
+  # ¿Ya está arriba?
+  try {
+    docker info --format '{{.ServerVersion}}' *> $null
+    return $true
+  } catch {}
+
+  $service = $null
+  try { $service = Get-Service -Name "com.docker.service" -ErrorAction Stop } catch { $service = $null }
+
+  $serviceStarted = $false
+  if ($service -and $service.Status -ne 'Running') {
+    Info "Iniciando servicio Docker (com.docker.service)..."
+    try {
+      Start-Service -Name "com.docker.service" -ErrorAction Stop
+      $serviceStarted = $true
+    } catch {
+      Warn "No pude iniciar el servicio Docker: $($_.Exception.Message)"
+    }
+  }
+
+  $desktopStarted = $false
+  if (-not $service -or ($service -and $service.Status -ne 'Running' -and -not $serviceStarted)) {
+    $pf    = $env:ProgramFiles
+    $pf86  = ${env:ProgramFiles(x86)}
+    $local = $env:LOCALAPPDATA
+
+    $candidates = @()
+    if ($pf)   { $candidates += (Join-Path $pf "Docker\Docker\Docker Desktop.exe") }
+    if ($pf86) { $candidates += (Join-Path $pf86 "Docker\Docker\Docker Desktop.exe") }
+    if ($local){ $candidates += (Join-Path $local "Programs\Docker\Docker Desktop.exe") }
+
+    foreach ($p in $candidates) {
+      if ($p -and (Test-Path $p)) {
+        Info "Abriendo Docker Desktop..."
+        try {
+          Start-Process -FilePath $p -WindowStyle Minimized | Out-Null
+          $desktopStarted = $true
+          break
+        } catch {
+          Warn "No pude iniciar Docker Desktop ($p): $($_.Exception.Message)"
+        }
+      }
+    }
+
+    if (-not $desktopStarted -and -not $serviceStarted) {
+      Warn "No encontré Docker Desktop ni pude iniciar el servicio."
+    }
+  }
+
+  $deadline = (Get-Date).AddSeconds($WaitSeconds)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      docker info --format '{{.ServerVersion}}' *> $null
+      return $true
+    } catch {}
+    Start-Sleep -Seconds 2
+  }
+
+  return $false
+}
+
 
 function Get-PgEnvFromContainer {
   param([Parameter(Mandatory=$true)][string]$Container)
@@ -227,54 +291,57 @@ function Ensure-QrcodePkg {
   }
 }
 
-function Show-QrDotsCyan {
+function Show-QrConsoleBlocks {
   param(
     [Parameter(Mandatory=$true)][string]$ProjectPath,
-    [Parameter(Mandatory=$true)][string]$Url
+    [Parameter(Mandatory=$true)][string]$Url,
+    [bool]$UseColor = $true
   )
 
-  # Nota: render de "puntitos" puede ser menos escaneable en consola.
-  # Por eso además generamos PNG grande para escaneo real.
+  # Bloques dobles mantienen proporción 2:1; quiet zone amplia para escaneo confiable.
   $js = @'
 const QRCode = require("qrcode");
 
 const url = process.argv[2];
-const qr = QRCode.create(url, { errorCorrectionLevel: "M" });
+const useColor = process.argv[3] === "1";
 
+if (!url) {
+  console.error("URL no recibida");
+  process.exit(1);
+}
+
+const qr = QRCode.create(url, { errorCorrectionLevel: "M" });
 const size = qr.modules.size;
 const data = qr.modules.data;
 
-// "puntitos" (mejor que '.' porque llena más el módulo)
-const DARK  = "● ";   // 2 chars de ancho (consistencia visual)
+const QUIET = 4;        // margen recomendado
+const DARK  = "██";     // 2 chars → proporción horizontal 2:1
 const LIGHT = "  ";
 
-const QUIET = 2; // margen (quiet zone)
-
-// ANSI: cyan
 const CYAN  = "\x1b[36m";
 const RESET = "\x1b[0m";
 
-let out = "";
+let lines = [];
 for (let y = -QUIET; y < size + QUIET; y++) {
   let line = "";
   for (let x = -QUIET; x < size + QUIET; x++) {
-    let isDark = false;
-    if (x >= 0 && y >= 0 && x < size && y < size) {
-      isDark = data[y * size + x] === true;
-    }
+    const inBounds = x >= 0 && y >= 0 && x < size && y < size;
+    const isDark = inBounds ? data[y * size + x] === true : false;
     line += isDark ? DARK : LIGHT;
   }
-  out += CYAN + line + RESET + "\n";
+  lines.push(useColor ? CYAN + line + RESET : line);
 }
-process.stdout.write(out);
+
+process.stdout.write(lines.join("\n") + "\n");
 '@
 
-  $tempJs = Join-Path $env:TEMP "qr_dots_chavalos.js"
+  $tempJs = Join-Path $env:TEMP "qr_blocks_chavalos.js"
   Set-Content -Path $tempJs -Value $js -Encoding UTF8
 
   Push-Location $ProjectPath
   try {
-    node $tempJs $Url
+    $colorFlag = if ($UseColor) { "1" } else { "0" }
+    node $tempJs $Url $colorFlag
   } finally {
     Pop-Location
     Remove-Item $tempJs -Force -ErrorAction SilentlyContinue
@@ -317,6 +384,9 @@ Write-Host ""
 # ========= [1] DOCKER =========
 Step "[1/4] Verificando Docker..."
 try {
+  if (-not (Ensure-DockerRunning -WaitSeconds 75)) {
+    Fail "Docker no pudo iniciarse automáticamente. Abre Docker Desktop y vuelve a ejecutar."
+  }
   docker version *> $null
   Ok "Docker está disponible"
 } catch {
@@ -439,15 +509,20 @@ Write-Host ""
 Write-Host "  URL: $url" -ForegroundColor Yellow
 Write-Host "  (Copiado al portapapeles)" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  📷 QR en terminal (PUNTITOS + CIAN):" -ForegroundColor Green
+Write-Host "  📷 QR en terminal (BLOQUES 2:1):" -ForegroundColor Green
 Write-Host ""
 
+# QR en consola (robusto, con fallback)
 try {
-  # Instala qrcode (offline) y renderiza puntitos
   Ensure-QrcodePkg -ProjectPath $nextPath
-  Show-QrDotsCyan -ProjectPath $nextPath -Url $url
+  $consoleSupportsColor = ($env:WT_SESSION) -or ($Host.Name -match "ConsoleHost")
+  Show-QrConsoleBlocks -ProjectPath $nextPath -Url $url -UseColor:$consoleSupportsColor
+} catch {
+  Warn "QR en consola no disponible: $($_.Exception.Message)"
+}
 
-  # PNG grande (lo más escaneable) - descargado desde API pública
+# PNG grande (lo más escaneable) - descargado desde API pública
+try {
   $qrPng = Join-Path $repoRoot "LAN-QR.png"
   Make-QrPng -Url $url -OutPng $qrPng
 
@@ -455,7 +530,7 @@ try {
   Info "Abriendo el QR PNG (recomendado para escanear rápido)..."
   Start-Process "$qrPng"
 } catch {
-  Warn "No pude generar QR. Motivo: $($_.Exception.Message)"
+  Warn "No pude generar QR PNG. Motivo: $($_.Exception.Message)"
   Write-Host "  Usa esta URL manualmente: $url" -ForegroundColor Yellow
 }
 

@@ -1,0 +1,139 @@
+.page {
+  padding: var(--space-6);
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--font-2xl);
+  font-weight: var(--font-extrabold);
+  color: var(--text);
+}
+
+.subtitle {
+  color: var(--text-secondary);
+}
+
+.cards {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.cardTitle {
+  font-weight: var(--font-bold);
+  font-size: var(--font-lg);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.qrWrapper {
+  background: var(--bg-alt);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qrImage {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  object-fit: cover;
+}
+
+.dataRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-base);
+  color: var(--text);
+}
+
+.label {
+  color: var(--text-secondary);
+  font-weight: var(--font-medium);
+}
+
+.value {
+  font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-weight: var(--font-semibold);
+}
+
+.primaryBtn,
+.secondaryBtn {
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-sm);
+}
+
+.primaryBtn {
+  background: var(--primary);
+  color: #fff;
+}
+
+.secondaryBtn {
+  background: var(--bg-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.copyOk {
+  color: var(--success);
+  font-weight: var(--font-semibold);
+}
+
+.copyError {
+  color: var(--danger);
+  font-weight: var(--font-semibold);
+}
+
+.idleBanner {
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--primary-bg);
+  color: var(--primary);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: var(--space-4);
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

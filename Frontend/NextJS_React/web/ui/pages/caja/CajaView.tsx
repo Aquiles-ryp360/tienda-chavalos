@@ -1,11 +1,14 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
+import Image from 'next/image'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
 import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
+import { ShareWhatsAppModal } from '@/ui/components/ShareWhatsAppModal'
+import { PAYMENT_INFO, PaymentMethodUi } from '@/lib/payment-info'
 import styles from './caja.module.css'
 
 // Unidades que permiten decimales (consistente con backend)
@@ -131,12 +134,15 @@ export function CajaView({ user }: CajaViewProps) {
   const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
   const [customerName, setCustomerName] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState('EFECTIVO')
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodUi>('EFECTIVO')
   const [loading, setLoading] = useState(false)
   const [insufficientStockError, setInsufficientStockError] = useState<InsufficientStockError | null>(null)
   const [overrideNote, setOverrideNote] = useState('')
   const [cartOpen, setCartOpen] = useState(false) // Estado para abrir/cerrar carrito en móvil
   const [cartHydrated, setCartHydrated] = useState(false)
+  const [shareModalOpen, setShareModalOpen] = useState(false)
+  const [shareMethod, setShareMethod] = useState<PaymentMethodUi>('EFECTIVO')
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
 
   // Bloquear scroll del body cuando el carrito está abierto
   useEffect(() => {
@@ -169,11 +175,15 @@ export function CajaView({ user }: CajaViewProps) {
   useEffect(() => {
     try {
       const stored = typeof window !== 'undefined' ? localStorage.getItem('cajaCart') : null
+      const storedPayment = typeof window !== 'undefined' ? localStorage.getItem('cajaPaymentMethod') : null
       if (stored) {
         const parsed = JSON.parse(stored)
         if (Array.isArray(parsed)) {
           setCart(parsed)
         }
+      }
+      if (storedPayment === 'EFECTIVO' || storedPayment === 'YAPE' || storedPayment === 'TRANSFERENCIA') {
+        setPaymentMethod(storedPayment)
       }
     } catch (error) {
       console.warn('No se pudo leer carrito de localStorage', error)
@@ -187,10 +197,11 @@ export function CajaView({ user }: CajaViewProps) {
     if (!cartHydrated) return
     try {
       localStorage.setItem('cajaCart', JSON.stringify(cart))
+      localStorage.setItem('cajaPaymentMethod', paymentMethod)
     } catch (error) {
       console.warn('No se pudo guardar carrito en localStorage', error)
     }
-  }, [cart, cartHydrated])
+  }, [cart, paymentMethod, cartHydrated])
 
   useEffect(() => {
     loadProducts()
@@ -478,6 +489,50 @@ export function CajaView({ user }: CajaViewProps) {
   const tax = 0
   const total = subtotal + tax
 
+  const buildPaymentMessage = (method: PaymentMethodUi): string => {
+    const lines = [
+      'Ferretería Chavalos – Datos de pago',
+      `Método: ${method === 'YAPE' ? 'Yape' : method === 'TRANSFERENCIA' ? 'Transferencia' : 'Efectivo'}`,
+      `Total: ${formatMoneyPEN(total)}`,
+    ]
+    if (method === 'TRANSFERENCIA') {
+      lines.push(`Cuenta BCP (S/): ${PAYMENT_INFO.accountBcp}`)
+      lines.push(`CCI: ${PAYMENT_INFO.cci}`)
+    }
+    if (method === 'YAPE') {
+      lines.push('Escanea el QR para pagar con Yape')
+    }
+    lines.push(`Titular: ${PAYMENT_INFO.holder}`)
+    lines.push('(verifica el monto antes de enviar)')
+    return lines.join('\n')
+  }
+
+  const handleSharePayment = (method: PaymentMethodUi) => {
+    setShareMethod(method)
+    setShareModalOpen(true)
+  }
+
+  const handleShareModalConfirm = (normalizedDigits: string) => {
+    const message = buildPaymentMessage(shareMethod)
+    const url = `https://wa.me/${normalizedDigits}?text=${encodeURIComponent(message)}`
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleCopyPayment = async (method: PaymentMethodUi) => {
+    const payload = buildPaymentMessage(method)
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(payload)
+        setCopyStatus('copied')
+        setTimeout(() => setCopyStatus('idle'), 2000)
+      } else {
+        setCopyStatus('error')
+      }
+    } catch {
+      setCopyStatus('error')
+    }
+  }
+
   const handleCheckout = async (forcePhysicalStock: boolean = false) => {
     if (cart.length === 0) {
       notify({ type: 'warning', title: 'Carrito vacío', message: 'Agrega productos antes de finalizar' })
@@ -492,7 +547,10 @@ export function CajaView({ user }: CajaViewProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customerName: customerName || undefined,
-          paymentMethod,
+          paymentMethod:
+            paymentMethod === 'TRANSFERENCIA'
+              ? 'TRANSFERENCIA'
+              : 'EFECTIVO', // backend enum no soporta YAPE; se envía como EFECTIVO
           items: cart.map((item) => ({
             productId: item.product.id,
             presentationId: item.presentationId,
@@ -1021,10 +1079,10 @@ export function CajaView({ user }: CajaViewProps) {
                           </button>
                           <button
                             type="button"
-                            className={`${styles.paymentMethodBtn} ${paymentMethod === 'TARJETA' ? styles.active : ''}`}
-                            onClick={() => setPaymentMethod('TARJETA')}
+                            className={`${styles.paymentMethodBtn} ${paymentMethod === 'YAPE' ? styles.active : ''}`}
+                            onClick={() => setPaymentMethod('YAPE')}
                           >
-                            💳 Tarjeta
+                            📱 Yape
                           </button>
                           <button
                             type="button"
@@ -1034,6 +1092,67 @@ export function CajaView({ user }: CajaViewProps) {
                             🏦 Transfer.
                           </button>
                         </div>
+
+                        {(paymentMethod === 'YAPE' || paymentMethod === 'TRANSFERENCIA') && (
+                          <div className={styles.paymentInfoCard}>
+                            <div className={styles.paymentInfoHeader}>
+                              {paymentMethod === 'YAPE' ? 'Paga con Yape' : 'Transferencia BCP'}
+                            </div>
+                            {paymentMethod === 'YAPE' && (
+                              <div className={styles.paymentInfoContent}>
+                                <div className={styles.paymentInfoRow}>
+                                  <Image
+                                    src={PAYMENT_INFO.yapeQrPath}
+                                    alt="QR Yape"
+                                    width={180}
+                                    height={180}
+                                    className={styles.paymentQr}
+                                  />
+                                  <div className={styles.paymentInfoText}>
+                                    <div className={styles.paymentLabel}>Titular</div>
+                                    <div className={styles.paymentValue}>{PAYMENT_INFO.holder}</div>
+                                    <div className={styles.paymentNote}>Escanea el QR para pagar con Yape.</div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            {paymentMethod === 'TRANSFERENCIA' && (
+                              <div className={styles.paymentInfoContent}>
+                                <div className={styles.paymentInfoRow}>
+                                  <div className={styles.paymentInfoText}>
+                                    <div className={styles.paymentLabel}>Cuenta BCP (S/)</div>
+                                    <div className={styles.paymentValue}>{PAYMENT_INFO.accountBcp}</div>
+                                  </div>
+                                </div>
+                                <div className={styles.paymentInfoRow}>
+                                  <div className={styles.paymentInfoText}>
+                                    <div className={styles.paymentLabel}>CCI</div>
+                                    <div className={styles.paymentValue}>{PAYMENT_INFO.cci}</div>
+                                  </div>
+                                </div>
+                                <div className={styles.paymentNote}>Confirma el monto antes de transferir.</div>
+                              </div>
+                            )}
+                            <div className={styles.paymentActions}>
+                              <button
+                                type="button"
+                                className={styles.paymentPrimaryBtn}
+                                onClick={() => handleSharePayment(paymentMethod)}
+                              >
+                                📤 Compartir por WhatsApp
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.paymentSecondaryBtn}
+                                onClick={() => handleCopyPayment(paymentMethod)}
+                              >
+                                📋 Copiar datos
+                              </button>
+                              {copyStatus === 'copied' && <span className={styles.copyOk}>Copiado</span>}
+                              {copyStatus === 'error' && <span className={styles.copyError}>No se pudo copiar</span>}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <Button
@@ -1052,6 +1171,12 @@ export function CajaView({ user }: CajaViewProps) {
           </div>
         </div>
       </div>
+
+      <ShareWhatsAppModal
+        open={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+        onShare={handleShareModalConfirm}
+      />
 
       {/* Modal de ajuste de precio */}
       {priceAdjustModal.show && priceAdjustModal.itemIndex !== null && (

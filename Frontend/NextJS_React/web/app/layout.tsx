@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import '@/styles/globals.css'
 import { ToastProvider } from '@/ui/components/Toast/ToastContext'
 import { ToastContainer } from '@/ui/components/Toast/ToastContainer'
+import { IdleRedirectProvider } from '@/ui/components/IdleRedirectProvider'
 
 export const metadata: Metadata = {
   title: 'Ferretería Chavalos',
@@ -24,8 +25,10 @@ export default function RootLayout({
     <html lang="es">
       <body>
         <ToastProvider>
-          {children}
-          <ToastContainer />
+          <IdleRedirectProvider>
+            {children}
+            <ToastContainer />
+          </IdleRedirectProvider>
         </ToastProvider>
       </body>
     </html>

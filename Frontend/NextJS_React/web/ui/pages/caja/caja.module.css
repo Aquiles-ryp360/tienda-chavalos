@@ -772,6 +772,98 @@
   box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
 }
 
+.paymentInfoCard {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.paymentInfoHeader {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.paymentInfoContent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.paymentInfoRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.paymentInfoText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.paymentLabel {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.paymentValue {
+  font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-weight: 700;
+}
+
+.paymentNote {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.paymentActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.paymentPrimaryBtn,
+.paymentSecondaryBtn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.paymentPrimaryBtn {
+  background: var(--primary);
+  color: #fff;
+}
+
+.paymentSecondaryBtn {
+  background: var(--bg-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.paymentQr {
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+
+.copyOk {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.copyError {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 /* Botón de checkout */
 .btnCheckout {
   width: 100%;
