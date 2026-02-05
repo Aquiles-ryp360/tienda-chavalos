@@ -13,7 +13,7 @@ interface Product {
   id: string
   sku: string
   name: string
-  description?: string
+  description?: string | null
   unit: string
   price: number
   stock: number
@@ -26,6 +26,8 @@ interface ProductosViewProps {
     fullName: string
     role: string
   }
+  initialProducts?: Product[]
+  initialTotal?: number
 }
 
 interface FormData {
@@ -36,11 +38,6 @@ interface FormData {
   price: string
   stock: string
   minStock: string
-}
-
-interface FormState {
-  formData: FormData
-  skuTouched: boolean
 }
 
 interface FormErrors {
@@ -61,13 +58,18 @@ function useDebouncedValue<T>(value: T, delay = 350) {
   return debounced
 }
 
+const PAGE_SIZE = 30
 
-
-export function ProductosView({ user }: ProductosViewProps) {
+export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: ProductosViewProps) {
   const { notify } = useToast()
-  const [products, setProducts] = useState<Product[]>([])
-  const [loading, setLoading] = useState(true)
+  const [products, setProducts] = useState<Product[]>(initialProducts)
+  const [total, setTotal] = useState<number>(initialTotal || initialProducts.length)
+  const [skip, setSkip] = useState<number>(initialProducts.length)
+  const [hasMore, setHasMore] = useState<boolean>(initialProducts.length < (initialTotal || initialProducts.length))
+  const [loading, setLoading] = useState<boolean>(initialProducts.length === 0)
+  const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search, 300)
   const [showModal, setShowModal] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -89,12 +91,27 @@ export function ProductosView({ user }: ProductosViewProps) {
   const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
   const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
   const [nameCheckLoading, setNameCheckLoading] = useState(false)
+  const initialHydrated = useRef<boolean>(initialProducts.length > 0)
+  const firstEffectRun = useRef<boolean>(false)
 
   const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
 
   useEffect(() => {
-    loadProducts()
-  }, [search])
+    const currentSearch = debouncedSearch.trim()
+
+    // Evitar doble carga inicial si ya recibimos productos desde el servidor
+    if (!firstEffectRun.current && initialHydrated.current && currentSearch === '') {
+      firstEffectRun.current = true
+      setLoading(false)
+      setHasMore(initialProducts.length < (initialTotal || initialProducts.length))
+      setSkip(initialProducts.length)
+      setTotal(initialTotal || initialProducts.length)
+      return
+    }
+
+    firstEffectRun.current = true
+    fetchProducts({ append: false, offset: 0, search: currentSearch, showSpinner: true })
+  }, [debouncedSearch])
 
   // Sugerencias / alerta de duplicado por nombre (solo cuando el modal está abierto)
   useEffect(() => {
@@ -173,19 +190,42 @@ export function ProductosView({ user }: ProductosViewProps) {
     }
   }, [showModal])
 
-  const loadProducts = async () => {
+  const fetchProducts = async ({
+    append,
+    offset,
+    search,
+    showSpinner,
+  }: {
+    append: boolean
+    offset: number
+    search: string
+    showSpinner?: boolean
+  }) => {
     try {
+      if (showSpinner) setLoading(true)
+      if (!showSpinner && append) setLoadingMore(true)
+
       const params = new URLSearchParams()
       if (search) params.append('search', search)
       params.append('isActive', 'true')
+      params.append('limit', String(PAGE_SIZE))
+      params.append('offset', String(offset))
 
       const res = await fetch(`/api/products?${params}`)
       const data = await res.json()
-      setProducts(data.products)
+      const items: Product[] = data.products || data.items || []
+      const totalItems = Number(data.total ?? items.length)
+
+      setProducts((prev) => (append ? [...prev, ...items] : items))
+      const nextSkip = offset + items.length
+      setSkip(nextSkip)
+      setTotal(totalItems)
+      setHasMore(nextSkip < totalItems)
     } catch (error) {
       console.error('Error cargando productos:', error)
     } finally {
-      setLoading(false)
+      if (showSpinner) setLoading(false)
+      setLoadingMore(false)
     }
   }
 
@@ -321,7 +361,7 @@ export function ProductosView({ user }: ProductosViewProps) {
 
     try {
       await fetch(`/api/products/${id}`, { method: 'DELETE' })
-      loadProducts()
+      fetchProducts({ append: false, offset: 0, search: debouncedSearch.trim(), showSpinner: true })
     } catch (error) {
       console.error('Error eliminando producto:', error)
     }
@@ -375,7 +415,7 @@ export function ProductosView({ user }: ProductosViewProps) {
 
       closeModal()
       setSaveSuccess(true)
-      loadProducts()
+      fetchProducts({ append: false, offset: 0, search: debouncedSearch.trim(), showSpinner: true })
     } catch (error) {
       console.error('Error guardando producto:', error)
       notify({ type: 'error', title: 'Error al guardar', message: 'No se pudo guardar el producto' })
@@ -435,6 +475,20 @@ export function ProductosView({ user }: ProductosViewProps) {
           </div>
         ) : (
           <>
+            <div className={styles.resultsMeta}>
+              <span>{products.length} de {total} productos</span>
+              {hasMore && (
+                <button
+                  type="button"
+                  className={styles.loadMoreSmall}
+                  onClick={() => fetchProducts({ append: true, offset: skip, search: debouncedSearch.trim(), showSpinner: false })}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? 'Cargando…' : 'Cargar más'}
+                </button>
+              )}
+            </div>
+
             {/* Mobile Cards View */}
             <div className={styles.productsGrid}>
               {products.map((product) => {
@@ -589,6 +643,18 @@ export function ProductosView({ user }: ProductosViewProps) {
                 </tbody>
               </table>
             </div>
+
+            {hasMore && (
+              <div className={styles.loadMoreRow}>
+                <button
+                  className={styles.loadMoreBtn}
+                  onClick={() => fetchProducts({ append: true, offset: skip, search: debouncedSearch.trim(), showSpinner: false })}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? 'Cargando…' : 'Cargar más'}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>

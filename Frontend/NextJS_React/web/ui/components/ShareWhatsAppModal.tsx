@@ -6,7 +6,9 @@ import styles from './share-whatsapp-modal.module.css'
 interface ShareWhatsAppModalProps {
   open: boolean
   onClose: () => void
-  onShare: (normalizedDigits: string) => void
+  onShare: (normalizedDigits: string) => Promise<void> | void
+  loading?: boolean
+  allowEmpty?: boolean
 }
 
 const normalizePhone = (value: string): string => {
@@ -18,7 +20,7 @@ const normalizePhone = (value: string): string => {
 const isValid = (digits: string): boolean =>
   digits.length >= 9 && digits.length <= 15
 
-export function ShareWhatsAppModal({ open, onClose, onShare }: ShareWhatsAppModalProps) {
+export function ShareWhatsAppModal({ open, onClose, onShare, loading = false, allowEmpty = false }: ShareWhatsAppModalProps) {
   const [phone, setPhone] = useState('')
   const [error, setError] = useState('')
 
@@ -31,14 +33,16 @@ export function ShareWhatsAppModal({ open, onClose, onShare }: ShareWhatsAppModa
 
   if (!open) return null
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const normalized = normalizePhone(phone)
-    if (!normalized || !isValid(normalized)) {
-      setError('Ingresa un número válido (9 a 15 dígitos). Ej: +51 9xx xxx xxx')
-      return
+    if (!allowEmpty) {
+      if (!normalized || !isValid(normalized)) {
+        setError('Ingresa un número válido (9 a 15 dígitos). Ej: +51 9xx xxx xxx')
+        return
+      }
     }
     setError('')
-    onShare(normalized)
+    await onShare(normalized)
     onClose()
   }
 
@@ -69,8 +73,8 @@ export function ShareWhatsAppModal({ open, onClose, onShare }: ShareWhatsAppModa
           <button className={styles.btnSecondary} onClick={onClose}>
             Cancelar
           </button>
-          <button className={styles.btnPrimary} onClick={handleSubmit}>
-            Compartir
+          <button className={styles.btnPrimary} onClick={handleSubmit} disabled={loading}>
+            {loading ? 'Generando captura…' : 'Compartir'}
           </button>
         </div>
       </div>

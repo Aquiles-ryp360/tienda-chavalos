@@ -1,26 +1,19 @@
 'use client'
 
 import { ReactNode } from 'react'
-import { useIdleRedirect } from '@/ui/hooks/useIdleRedirect'
 
 interface IdleRedirectProviderProps {
   children: ReactNode
-  idleMs?: number
-  route?: string
+  /**
+   * Mantener la firma por compatibilidad, pero auto-redirect está desactivado por defecto.
+   */
+  enabled?: boolean
 }
 
-const DEFAULT_IDLE_MS = 60_000
-const DEFAULT_ROUTE = '/pagos'
-
 /**
- * Envuelve la app y dispara una redirección tras inactividad.
- * Reinicia el contador ante movimiento/teclado/touch/scroll.
+ * Wrapper pasivo: no realiza redirecciones automáticas.
+ * Se deja la estructura para futuras extensiones sin alterar layout.
  */
-export function IdleRedirectProvider({
-  children,
-  idleMs = DEFAULT_IDLE_MS,
-  route = DEFAULT_ROUTE,
-}: IdleRedirectProviderProps) {
-  useIdleRedirect({ idleMs, route })
+export function IdleRedirectProvider({ children }: IdleRedirectProviderProps) {
   return <>{children}</>
 }

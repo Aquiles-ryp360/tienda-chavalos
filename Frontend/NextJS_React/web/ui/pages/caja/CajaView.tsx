@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import Image from 'next/image'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
@@ -8,7 +8,9 @@ import { Button } from '@/ui/components/Button'
 import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
 import { ShareWhatsAppModal } from '@/ui/components/ShareWhatsAppModal'
-import { PAYMENT_INFO, PaymentMethodUi } from '@/lib/payment-info'
+import { PAYMENT_INFO, PaymentMethodUi, formatWhatsAppPaymentText } from '@/lib/payment-info'
+import { generatePaymentCardPng } from '@/lib/payment-share-image'
+import { shareWhatsAppWithImage } from '@/lib/share-whatsapp'
 import styles from './caja.module.css'
 
 // Unidades que permiten decimales (consistente con backend)
@@ -126,11 +128,12 @@ interface CajaViewProps {
     fullName: string
     role: string
   }
+  initialProducts?: Product[]
 }
 
-export function CajaView({ user }: CajaViewProps) {
+export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const { notify } = useToast()
-  const [products, setProducts] = useState<Product[]>([])
+  const [products, setProducts] = useState<Product[]>(initialProducts)
   const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
   const [customerName, setCustomerName] = useState('')
@@ -142,6 +145,7 @@ export function CajaView({ user }: CajaViewProps) {
   const [cartHydrated, setCartHydrated] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareMethod, setShareMethod] = useState<PaymentMethodUi>('EFECTIVO')
+  const [shareLoading, setShareLoading] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
 
   // Bloquear scroll del body cuando el carrito está abierto
@@ -170,6 +174,7 @@ export function CajaView({ user }: CajaViewProps) {
     value: 0,
     reason: ''
   })
+  const initialHydratedRef = useRef<boolean>(initialProducts.length > 0)
 
   // Hidratar carrito desde localStorage (permite mantener items entre recargas)
   useEffect(() => {
@@ -204,6 +209,10 @@ export function CajaView({ user }: CajaViewProps) {
   }, [cart, paymentMethod, cartHydrated])
 
   useEffect(() => {
+    if (!search && initialHydratedRef.current) {
+      initialHydratedRef.current = false
+      return
+    }
     loadProducts()
   }, [search])
 
@@ -482,44 +491,48 @@ export function CajaView({ user }: CajaViewProps) {
     return pres.computedUnitPrice
   }
 
-  const subtotal = cart.reduce((sum, item) => {
-    const unitPrice = getUnitPrice(item)
-    return sum + unitPrice * item.soldQty
-  }, 0)
+  const subtotal = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      const unitPrice = getUnitPrice(item)
+      return sum + unitPrice * item.soldQty
+    }, 0)
+  }, [cart])
   const tax = 0
   const total = subtotal + tax
-
-  const buildPaymentMessage = (method: PaymentMethodUi): string => {
-    const lines = [
-      'Ferretería Chavalos – Datos de pago',
-      `Método: ${method === 'YAPE' ? 'Yape' : method === 'TRANSFERENCIA' ? 'Transferencia' : 'Efectivo'}`,
-      `Total: ${formatMoneyPEN(total)}`,
-    ]
-    if (method === 'TRANSFERENCIA') {
-      lines.push(`Cuenta BCP (S/): ${PAYMENT_INFO.accountBcp}`)
-      lines.push(`CCI: ${PAYMENT_INFO.cci}`)
-    }
-    if (method === 'YAPE') {
-      lines.push('Escanea el QR para pagar con Yape')
-    }
-    lines.push(`Titular: ${PAYMENT_INFO.holder}`)
-    lines.push('(verifica el monto antes de enviar)')
-    return lines.join('\n')
-  }
 
   const handleSharePayment = (method: PaymentMethodUi) => {
     setShareMethod(method)
     setShareModalOpen(true)
+    setShareLoading(false)
   }
 
-  const handleShareModalConfirm = (normalizedDigits: string) => {
-    const message = buildPaymentMessage(shareMethod)
-    const url = `https://wa.me/${normalizedDigits}?text=${encodeURIComponent(message)}`
-    window.open(url, '_blank', 'noopener,noreferrer')
+  const handleShareModalConfirm = async (normalizedDigits: string) => {
+    try {
+      setShareLoading(true)
+      const text = formatWhatsAppPaymentText({ amountSoles: total, context: 'caja' })
+      const imgBlob = await generatePaymentCardPng({ amountSoles: total })
+      const result = await shareWhatsAppWithImage({
+        text,
+        phone: normalizedDigits,
+        imgBlob,
+      })
+      if (result === 'fallback') {
+        notify({
+          type: 'info',
+          title: 'Imagen descargada',
+          message: 'Se abrió WhatsApp con el mensaje. Adjunta la imagen descargada.',
+        })
+      }
+    } catch (error) {
+      console.error('Error al compartir por WhatsApp:', error)
+      notify({ type: 'error', title: 'No se pudo compartir', message: 'Intenta nuevamente' })
+    } finally {
+      setShareLoading(false)
+    }
   }
 
   const handleCopyPayment = async (method: PaymentMethodUi) => {
-    const payload = buildPaymentMessage(method)
+    const payload = formatWhatsAppPaymentText({ amountSoles: total, context: 'caja' })
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(payload)
@@ -1176,6 +1189,7 @@ export function CajaView({ user }: CajaViewProps) {
         open={shareModalOpen}
         onClose={() => setShareModalOpen(false)}
         onShare={handleShareModalConfirm}
+        loading={shareLoading}
       />
 
       {/* Modal de ajuste de precio */}

@@ -13,10 +13,14 @@ export async function GET(request: NextRequest) {
     await requireAuth()
 
     const { searchParams } = new URL(request.url)
-    const search = searchParams.get('search') || undefined
+    const search = searchParams.get('search') || searchParams.get('q') || undefined
     const isActiveParam = searchParams.get('isActive')
-    const limit = parseInt(searchParams.get('limit') || '50')
-    const offset = parseInt(searchParams.get('offset') || '0')
+    const limit = parseInt(
+      searchParams.get('limit') ||
+        searchParams.get('take') ||
+        '50'
+    )
+    const offset = parseInt(searchParams.get('offset') || searchParams.get('skip') || '0')
 
     //.............................................
     const isActive = isActiveParam === 'true' ? true : isActiveParam === 'false' ? false : undefined
@@ -37,7 +41,16 @@ export async function GET(request: NextRequest) {
       offset,
     })
 
-    return NextResponse.json(result)
+    return NextResponse.json({
+      ...result,
+      items: result.products,
+      products: result.products,
+      total: result.total,
+      take: limit,
+      skip: offset,
+      limit,
+      offset,
+    })
   } catch (error: any) {
     console.error('Error en GET /api/products:', error)
     

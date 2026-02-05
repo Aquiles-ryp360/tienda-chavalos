@@ -1,0 +1,18 @@
+Frontend/NextJS_React/web/app/layout.tsx
+Frontend/NextJS_React/web/app/pagos/page.tsx
+Frontend/NextJS_React/web/lib/payment-info.ts
+Frontend/NextJS_React/web/public/payments/yape-qr.jpeg
+Frontend/NextJS_React/web/ui/components/BottomNav.tsx
+Frontend/NextJS_React/web/ui/components/Header.tsx
+Frontend/NextJS_React/web/ui/components/IdleRedirectProvider.tsx
+Frontend/NextJS_React/web/ui/components/ShareWhatsAppModal.tsx
+Frontend/NextJS_React/web/ui/components/share-whatsapp-modal.module.css
+Frontend/NextJS_React/web/ui/hooks/useIdleRedirect.ts
+Frontend/NextJS_React/web/ui/pages/admin/ProductFormView.tsx
+Frontend/NextJS_React/web/ui/pages/caja/CajaView.tsx
+Frontend/NextJS_React/web/ui/pages/caja/caja.module.css
+Frontend/NextJS_React/web/ui/pages/pagos/PagosView.tsx
+Frontend/NextJS_React/web/ui/pages/pagos/pagos.module.css
+Iniciar-LAN.ps1
+LAN-QR.png
+WhatsApp Image 2026-01-23 at 16.52.23.jpeg

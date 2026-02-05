@@ -1,15 +1,15 @@
 'use client'
 
 import Image from 'next/image'
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
-import { useIdleRedirect } from '@/ui/hooks/useIdleRedirect'
 import { ShareWhatsAppModal } from '@/ui/components/ShareWhatsAppModal'
-import { PAYMENT_INFO } from '@/lib/payment-info'
+import { PAYMENT_INFO, formatWhatsAppPaymentText } from '@/lib/payment-info'
 import styles from './pagos.module.css'
-
-const IDLE_MS = 60_000
+import { useToast } from '@/ui/components/Toast/ToastContext'
+import { generatePaymentCardPng } from '@/lib/payment-share-image'
+import { shareWhatsAppWithImage } from '@/lib/share-whatsapp'
 
 interface PagosViewProps {
   user: {
@@ -19,27 +19,28 @@ interface PagosViewProps {
 }
 
 export function PagosView({ user }: PagosViewProps) {
-  const idle = useIdleRedirect({
-    idleMs: IDLE_MS,
-    route: '/pagos',
-    exposeRemaining: true,
-  })
-
-  const remainingSeconds = useMemo(() => {
-    if (!idle?.remainingMs) return Math.ceil(IDLE_MS / 1000)
-    return Math.ceil(idle.remainingMs / 1000)
-  }, [idle?.remainingMs])
-
   const [shareOpen, setShareOpen] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [qrOpen, setQrOpen] = useState(false)
+  const [shareLoading, setShareLoading] = useState(false)
+  const { notify } = useToast()
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setQrOpen(false)
+    }
+    if (qrOpen) {
+      document.addEventListener('keydown', onKeyDown)
+      document.body.style.overflow = 'hidden'
+    }
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = ''
+    }
+  }, [qrOpen])
 
   const handleCopy = async () => {
-    const payload = [
-      `Ferretería Chavalos – Datos de pago`,
-      `Cuenta BCP (S/): ${PAYMENT_INFO.accountBcp}`,
-      `CCI: ${PAYMENT_INFO.cci}`,
-      `Titular: ${PAYMENT_INFO.holder}`,
-    ].join('\n')
+    const payload = formatWhatsAppPaymentText({ context: 'pagos' })
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(payload)
@@ -54,16 +55,32 @@ export function PagosView({ user }: PagosViewProps) {
   }
 
   const handleShare = (normalizedDigits: string) => {
-    const message = [
-      'Ferretería Chavalos – Datos de pago',
-      `Cuenta BCP (S/): ${PAYMENT_INFO.accountBcp}`,
-      `CCI: ${PAYMENT_INFO.cci}`,
-      `Titular: ${PAYMENT_INFO.holder}`,
-      '(verifica el monto antes de enviar)',
-    ].join('\n')
+    shareWithAsset(normalizedDigits)
+  }
 
-    const url = `https://wa.me/${normalizedDigits}?text=${encodeURIComponent(message)}`
-    window.open(url, '_blank', 'noopener,noreferrer')
+  const shareWithAsset = async (normalizedDigits?: string) => {
+    try {
+      setShareLoading(true)
+      const text = formatWhatsAppPaymentText({ context: 'pagos' })
+      const imgBlob = await generatePaymentCardPng({})
+      const result = await shareWhatsAppWithImage({
+        text,
+        phone: normalizedDigits || undefined,
+        imgBlob,
+      })
+      if (result === 'fallback') {
+        notify({
+          type: 'info',
+          title: 'Imagen descargada',
+          message: 'Se abrió WhatsApp con el mensaje. Adjunta la imagen descargada.',
+        })
+      }
+    } catch (error) {
+      console.error('Error al compartir por WhatsApp:', error)
+      notify({ type: 'error', title: 'No se pudo compartir', message: 'Intenta nuevamente' })
+    } finally {
+      setShareLoading(false)
+    }
   }
 
   return (
@@ -72,20 +89,28 @@ export function PagosView({ user }: PagosViewProps) {
       <main className={styles.page}>
         <div className={styles.header}>
           <div>
-            <div className={styles.title}>Pagos / Métodos de pago</div>
+            <div className={styles.title}>Pagos</div>
             <div className={styles.subtitle}>
-              Muestra rápida para clientes — escanea o copia los datos.
+              Muestra rápida para el cliente: escanea el QR o copia los datos.
             </div>
-          </div>
-          <div className={styles.idleBanner}>
-            Modo reposo: regresando en {remainingSeconds}s
           </div>
         </div>
 
         <div className={styles.cards}>
           <div className={styles.card}>
             <div className={styles.cardTitle}>QR Yape</div>
-            <div className={styles.qrWrapper}>
+            <div
+              className={styles.qrWrapper}
+              role="button"
+              tabIndex={0}
+              onClick={() => setQrOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setQrOpen(true)
+                }
+              }}
+            >
               <Image
                 src="/payments/yape-qr.jpeg"
                 alt="QR Yape Ferretería Chavalos"
@@ -95,13 +120,11 @@ export function PagosView({ user }: PagosViewProps) {
                 priority
               />
             </div>
-            <div className={styles.subtitle}>
-              Coloca la imagen real de Yape en <code>/public/payments/yape-qr.jpeg</code> si se actualiza.
-            </div>
+            <div className={styles.qrHint}>Toca para ampliar.</div>
           </div>
 
           <div className={styles.card}>
-            <div className={styles.cardTitle}>Cuenta BCP (Soles)</div>
+            <div className={styles.cardTitle}>Cuenta BCP (S/.)</div>
             <div className={styles.dataRow}>
               <span className={styles.label}>Número de cuenta</span>
               <span className={styles.value}>{PAYMENT_INFO.accountBcp}</span>
@@ -126,15 +149,15 @@ export function PagosView({ user }: PagosViewProps) {
             <div className={styles.cardTitle}>Instrucciones</div>
             <div className={styles.dataRow}>
               <span className={styles.label}>1.</span>
-              <span className={styles.value}>Escanear QR o copiar cuenta.</span>
+              <span className={styles.value}>Escanea el QR o copia la cuenta.</span>
             </div>
             <div className={styles.dataRow}>
               <span className={styles.label}>2.</span>
-              <span className={styles.value}>Confirmar monto antes de pagar.</span>
+              <span className={styles.value}>Confirma el monto antes de pagar.</span>
             </div>
             <div className={styles.dataRow}>
               <span className={styles.label}>3.</span>
-              <span className={styles.value}>Guardar voucher para adjuntar.</span>
+              <span className={styles.value}>Guarda el voucher para adjuntarlo.</span>
             </div>
           </div>
         </div>
@@ -145,7 +168,39 @@ export function PagosView({ user }: PagosViewProps) {
         open={shareOpen}
         onClose={() => setShareOpen(false)}
         onShare={handleShare}
+        allowEmpty
+        loading={shareLoading}
       />
+
+      {qrOpen && (
+        <div
+          className={styles.qrModalOverlay}
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setQrOpen(false)}
+        >
+          <div
+            className={styles.qrModalContent}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className={styles.qrCloseBtn}
+              aria-label="Cerrar imagen QR"
+              onClick={() => setQrOpen(false)}
+            >
+              ×
+            </button>
+            <Image
+              src="/payments/yape-qr.jpeg"
+              alt="QR Yape Ferretería Chavalos ampliado"
+              width={700}
+              height={700}
+              className={styles.qrModalImage}
+              priority
+            />
+          </div>
+        </div>
+      )}
     </>
   )
 }
