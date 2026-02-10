@@ -1,5 +1,5 @@
 import { prisma } from '@web/lib/prisma'
-import { Decimal } from '@web/lib/db'
+import { Decimal, type Prisma } from '@web/lib/db'
 
 export interface CreatePriceChangeInput {
   productId: string
@@ -20,6 +20,32 @@ export interface PriceChangeResult {
   reason: string
   createdAt: Date
 }
+
+type PriceChangeWithRelations = Prisma.PriceChangeGetPayload<{
+  include: {
+    product: {
+      select: {
+        id: true
+        name: true
+        price: true
+      }
+    }
+    presentation: {
+      select: {
+        id: true
+        name: true
+        priceOverride: true
+      }
+    }
+    user: {
+      select: {
+        id: true
+        username: true
+        fullName: true
+      }
+    }
+  }
+}>
 
 /**
  * Crear cambio de precio
@@ -139,7 +165,7 @@ export async function getPriceChangeHistory(options: {
     where.presentationId = options.presentationId
   }
 
-  const [changes, total] = await Promise.all([
+  const [changes, total]: [PriceChangeWithRelations[], number] = await Promise.all([
     prisma.priceChange.findMany({
       where,
       include: {

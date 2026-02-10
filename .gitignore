@@ -1,4 +1,8 @@
-# Node / Next
+# ============================================
+# .gitignore — Tienda Chavalos Virtual v1.0.0
+# ============================================
+
+# ── Node / Next.js ──────────────────────────
 node_modules/
 .next/
 dist/
@@ -8,13 +12,42 @@ coverage/
 *.log
 .env
 .env.local
+.env.production
+package-lock.json
 
-# Tauri / Rust
+# ── Tauri / Rust (artefactos compilados) ────
 target/
-src-tauri/target/
+**/target/
+ChavalosServerApp/src-tauri/target/
+ChavalosServerApp/src-tauri/gen/
 *.exe
 *.msi
+*.deb
+*.AppImage
+*.dmg
 
-# IDE
+# ── Recursos regenerables por prepare-installer.ps1 ──
+ChavalosServerApp/src-tauri/binaries/
+ChavalosServerApp/src-tauri/resources/
+
+# ── Logs ────────────────────────────────────
+logs/
+**/*.log
+
+# ── Carpetas temporales / backups ───────────
+.tmp/
+_tmp*/
+_backup_chavalos_tmp/
+_tmp_delete_test/
+
+# ── Versiones antiguas de scripts ───────────
+prepare-installer.v[0-9]*.ps1
+
+# ── IDE / Sistema ───────────────────────────
 .vscode/
+.idea/
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
