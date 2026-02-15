@@ -4,9 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
+import { SearchBar } from '@/ui/components/SearchBar'
 import { formatMoneyPEN } from '@/lib/format-money'
 import { generateFullSku, slugToSkuPrefix } from '@/lib/sku-generator'
 import { useToast } from '@/ui/components/Toast/ToastContext'
+import { useProductSearch } from '@/ui/hooks/useProductSearch'
 import styles from './productos.module.css'
 
 interface Product {
@@ -49,27 +51,24 @@ interface FormErrors {
   unit?: string
 }
 
-function useDebouncedValue<T>(value: T, delay = 350) {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(id)
-  }, [value, delay])
-  return debounced
-}
-
-const PAGE_SIZE = 30
-
 export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: ProductosViewProps) {
   const { notify } = useToast()
-  const [products, setProducts] = useState<Product[]>(initialProducts)
-  const [total, setTotal] = useState<number>(initialTotal || initialProducts.length)
-  const [skip, setSkip] = useState<number>(initialProducts.length)
-  const [hasMore, setHasMore] = useState<boolean>(initialProducts.length < (initialTotal || initialProducts.length))
-  const [loading, setLoading] = useState<boolean>(initialProducts.length === 0)
-  const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [search, setSearch] = useState('')
-  const debouncedSearch = useDebouncedValue(search, 300)
+
+  // ── SWR + Debounce + AbortController (búsqueda optimizada para LAN) ──
+  const {
+    products,
+    total,
+    debouncedQuery: debouncedSearch,
+    isLoading: loading,
+    isStale,
+    isSearching,
+    hasMore,
+    skip,
+    refresh,
+  } = useProductSearch(search, { limit: 30 })
+
+  const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [showModal, setShowModal] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -84,6 +83,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   })
   const [skuTouched, setSkuTouched] = useState(false)
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+  const [saving, setSaving] = useState(false)
   const modalRef = useRef<HTMLDivElement>(null)
 
   type NameSuggestion = Pick<Product, 'id' | 'sku' | 'name' | 'isActive'>
@@ -91,27 +91,8 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
   const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
   const [nameCheckLoading, setNameCheckLoading] = useState(false)
-  const initialHydrated = useRef<boolean>(initialProducts.length > 0)
-  const firstEffectRun = useRef<boolean>(false)
 
   const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
-
-  useEffect(() => {
-    const currentSearch = debouncedSearch.trim()
-
-    // Evitar doble carga inicial si ya recibimos productos desde el servidor
-    if (!firstEffectRun.current && initialHydrated.current && currentSearch === '') {
-      firstEffectRun.current = true
-      setLoading(false)
-      setHasMore(initialProducts.length < (initialTotal || initialProducts.length))
-      setSkip(initialProducts.length)
-      setTotal(initialTotal || initialProducts.length)
-      return
-    }
-
-    firstEffectRun.current = true
-    fetchProducts({ append: false, offset: 0, search: currentSearch, showSpinner: true })
-  }, [debouncedSearch])
 
   // Sugerencias / alerta de duplicado por nombre (solo cuando el modal está abierto)
   useEffect(() => {
@@ -190,41 +171,31 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     }
   }, [showModal])
 
-  const fetchProducts = async ({
-    append,
-    offset,
-    search,
-    showSpinner,
-  }: {
-    append: boolean
-    offset: number
-    search: string
-    showSpinner?: boolean
-  }) => {
+  // Carga paginada: "Cargar más" aún usa fetch directo + merge
+  const fetchMoreProducts = async () => {
     try {
-      if (showSpinner) setLoading(true)
-      if (!showSpinner && append) setLoadingMore(true)
-
+      setLoadingMore(true)
       const params = new URLSearchParams()
-      if (search) params.append('search', search)
+      if (debouncedSearch) params.append('search', debouncedSearch)
       params.append('isActive', 'true')
-      params.append('limit', String(PAGE_SIZE))
-      params.append('offset', String(offset))
+      params.append('limit', '30')
+      params.append('offset', String(skip))
 
       const res = await fetch(`/api/products?${params}`)
       const data = await res.json()
       const items: Product[] = data.products || data.items || []
-      const totalItems = Number(data.total ?? items.length)
 
-      setProducts((prev) => (append ? [...prev, ...items] : items))
-      const nextSkip = offset + items.length
-      setSkip(nextSkip)
-      setTotal(totalItems)
-      setHasMore(nextSkip < totalItems)
+      // Merge con datos actuales de SWR via mutate
+      refresh((prev) => {
+        if (!prev) return { products: items, total: Number(data.total ?? 0) }
+        return {
+          products: [...prev.products, ...items],
+          total: Number(data.total ?? prev.total),
+        }
+      }, { revalidate: false })
     } catch (error) {
-      console.error('Error cargando productos:', error)
+      console.error('Error cargando más productos:', error)
     } finally {
-      if (showSpinner) setLoading(false)
       setLoadingMore(false)
     }
   }
@@ -361,16 +332,18 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
     try {
       await fetch(`/api/products/${id}`, { method: 'DELETE' })
-      fetchProducts({ append: false, offset: 0, search: debouncedSearch.trim(), showSpinner: true })
+      refresh()
     } catch (error) {
       console.error('Error eliminando producto:', error)
     }
   }
 
   const handleSaveProduct = async () => {
+    if (saving) return
     if (!validateForm()) {
       return
     }
+    setSaving(true)
 
     const normalizedName = normalizeName(formData.name)
     if (
@@ -415,10 +388,13 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
       closeModal()
       setSaveSuccess(true)
-      fetchProducts({ append: false, offset: 0, search: debouncedSearch.trim(), showSpinner: true })
+      notify({ type: 'success', title: 'Cambios guardados', message: editingProduct ? 'Producto actualizado correctamente' : 'Producto creado correctamente' })
+      refresh()
     } catch (error) {
       console.error('Error guardando producto:', error)
       notify({ type: 'error', title: 'Error al guardar', message: 'No se pudo guardar el producto' })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -446,17 +422,12 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
         </div>
 
         <div className={styles.searchSection}>
-          <div className={styles.searchWrapper}>
-            <span className={styles.searchIcon}>🔍</span>
-            <input
-              type="text"
-              placeholder="Buscar por SKU o nombre de producto..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className={styles.searchInput}
-              aria-label="Buscar productos"
-            />
-          </div>
+          <SearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Buscar por SKU o nombre de producto..."
+            loading={isSearching || isStale}
+          />
         </div>
 
         {loading ? (
@@ -475,13 +446,13 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
           </div>
         ) : (
           <>
-            <div className={styles.resultsMeta}>
+            <div className={`${styles.resultsMeta} ${isStale ? styles.resultsStale : ''}`}>
               <span>{products.length} de {total} productos</span>
               {hasMore && (
                 <button
                   type="button"
                   className={styles.loadMoreSmall}
-                  onClick={() => fetchProducts({ append: true, offset: skip, search: debouncedSearch.trim(), showSpinner: false })}
+                  onClick={fetchMoreProducts}
                   disabled={loadingMore}
                 >
                   {loadingMore ? 'Cargando…' : 'Cargar más'}
@@ -497,11 +468,11 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 let statusBadge
                 
                 if (isOutOfStock) {
-                  statusBadge = <span className={`${styles.badge} ${styles.badgeDanger}`}>Sin stock</span>
+                  statusBadge = <span className={`${styles.badge} ${styles.badgeDanger}`}><span className={styles.stockDot} style={{ background: 'var(--stock-out)' }} />Agotado</span>
                 } else if (isLowStock) {
-                  statusBadge = <span className={`${styles.badge} ${styles.badgeWarning}`}>Bajo stock</span>
+                  statusBadge = <span className={`${styles.badge} ${styles.badgeWarning}`}><span className={styles.stockDot} style={{ background: 'var(--stock-reorder)' }} />Reordenar</span>
                 } else {
-                  statusBadge = <span className={`${styles.badge} ${styles.badgeSuccess}`}>OK</span>
+                  statusBadge = <span className={`${styles.badge} ${styles.badgeSuccess}`}><span className={styles.stockDot} style={{ background: 'var(--stock-available)' }} />Disponible</span>
                 }
 
                 return (
@@ -603,17 +574,20 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                         <td className={styles.statusCell}>
                           {isOutOfStock && (
                             <span className={`${styles.badge} ${styles.badgeDanger}`}>
-                              Sin stock
+                              <span className={styles.stockDot} style={{ background: 'var(--stock-out)' }} />
+                              Agotado
                             </span>
                           )}
                           {isLowStock && !isOutOfStock && (
                             <span className={`${styles.badge} ${styles.badgeWarning}`}>
-                              Bajo stock
+                              <span className={styles.stockDot} style={{ background: 'var(--stock-reorder)' }} />
+                              Reordenar
                             </span>
                           )}
                           {!isLowStock && (
                             <span className={`${styles.badge} ${styles.badgeSuccess}`}>
-                              OK
+                              <span className={styles.stockDot} style={{ background: 'var(--stock-available)' }} />
+                              Disponible
                             </span>
                           )}
                         </td>
@@ -648,7 +622,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
               <div className={styles.loadMoreRow}>
                 <button
                   className={styles.loadMoreBtn}
-                  onClick={() => fetchProducts({ append: true, offset: skip, search: debouncedSearch.trim(), showSpinner: false })}
+                  onClick={fetchMoreProducts}
                   disabled={loadingMore}
                 >
                   {loadingMore ? 'Cargando…' : 'Cargar más'}
@@ -683,7 +657,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 <legend className={styles.sectionTitle}>Identificación</legend>
                 <div className={styles.formGroup}>
                   <label htmlFor="sku" className={styles.formLabel}>
-                    SKU <span className={styles.required}>*</span>
+                    SKU {editingProduct ? <span className={styles.labelOptional}>(Automático)</span> : <span className={styles.labelRequired}>(Obligatorio)</span>}
                   </label>
                   <input
                     id="sku"
@@ -691,10 +665,16 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                     placeholder="Ej: ALAM-001"
                     value={formData.sku}
                     onChange={(e) => handleInputChange('sku', e.target.value)}
-                    className={`${styles.formInput} ${formErrors.sku ? styles.inputError : ''}`}
+                    className={`${styles.formInput} ${formErrors.sku ? styles.inputError : ''} ${editingProduct ? styles.inputReadonly : ''}`}
                     aria-invalid={!!formErrors.sku}
-                    aria-describedby={formErrors.sku ? 'sku-error' : undefined}
+                    aria-describedby={formErrors.sku ? 'sku-error' : 'sku-hint'}
+                    readOnly={!!editingProduct}
                   />
+                  {editingProduct && (
+                    <span id="sku-hint" className={styles.fieldHint}>
+                      ID de sistema, no requiere edición
+                    </span>
+                  )}
                   {!skuTouched && formData.sku && !editingProduct && (
                     <span className={styles.skuAutoGenerated}>
                       💡 SKU sugerido automáticamente (puedes editarlo)
@@ -709,7 +689,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
                 <div className={styles.formGroup}>
                   <label htmlFor="name" className={styles.formLabel}>
-                    Nombre del Producto <span className={styles.required}>*</span>
+                    Nombre del Producto <span className={styles.labelRequired}>(Obligatorio)</span>
                   </label>
                   <input
                     id="name"
@@ -762,7 +742,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 <legend className={styles.sectionTitle}>Detalles</legend>
                 <div className={styles.formGroup}>
                   <label htmlFor="description" className={styles.formLabel}>
-                    Descripción
+                    Descripción <span className={styles.labelOptional}>(Opcional)</span>
                   </label>
                   <textarea
                     id="description"
@@ -776,7 +756,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
                 <div className={styles.formGroup}>
                   <label htmlFor="unit" className={styles.formLabel}>
-                    Unidad de Medida <span className={styles.required}>*</span>
+                    Unidad de Medida <span className={styles.labelRequired}>(Obligatorio)</span>
                   </label>
                   <select
                     id="unit"
@@ -801,7 +781,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 <legend className={styles.sectionTitle}>Inventario y Precio</legend>
                 <div className={styles.formGroup}>
                   <label htmlFor="price" className={styles.formLabel}>
-                    Precio (S/) <span className={styles.required}>*</span>
+                    Precio (S/) <span className={styles.labelRequired}>(Obligatorio)</span>
                   </label>
                   <div className={styles.inputWithPrefix}>
                     <span className={styles.inputPrefix}>S/</span>
@@ -828,7 +808,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 <div className={styles.twoColumns}>
                   <div className={styles.formGroup}>
                     <label htmlFor="stock" className={styles.formLabel}>
-                      Stock Actual <span className={styles.required}>*</span>
+                      Stock Actual <span className={styles.labelRequired}>(Obligatorio)</span>
                     </label>
                     <input
                       id="stock"
@@ -851,7 +831,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
                   <div className={styles.formGroup}>
                     <label htmlFor="minStock" className={styles.formLabel}>
-                      Stock Mínimo <span className={styles.required}>*</span>
+                      Stock Mínimo <span className={styles.labelRequired}>(Obligatorio)</span>
                     </label>
                     <input
                       id="minStock"
@@ -886,8 +866,9 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
               <button
                 onClick={handleSaveProduct}
                 className={`${styles.modalBtn} ${styles.modalBtnPrimary}`}
+                disabled={saving}
               >
-                {editingProduct ? 'Actualizar' : 'Guardar'} Producto
+                {saving ? 'Guardando...' : `${editingProduct ? 'Actualizar' : 'Guardar'} Producto`}
               </button>
             </div>
           </div>

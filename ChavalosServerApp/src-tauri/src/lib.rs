@@ -5,8 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -43,6 +45,43 @@ struct BootStage {
     message: String,
 }
 
+#[derive(Clone, Serialize)]
+struct NetworkInfo {
+    ip: String,
+    ssid: String,
+    adapter: String,
+}
+
+#[derive(Clone, Serialize)]
+struct DiagnosticBundle {
+    timestamp: String,
+    network: NetworkInfo,
+    docker_status: String,
+    docker_containers: Vec<String>,
+    cpu_usage: f64,
+    memory_mb: f64,
+    logs: Vec<String>,
+    app_version: String,
+    os_info: String,
+}
+
+#[derive(Clone, Serialize)]
+#[allow(dead_code)]
+struct ConnectedDevice {
+    remote_addr: String,
+    method: String,
+    path: String,
+    timestamp: String,
+}
+
+#[derive(Clone, Serialize)]
+struct PortConflictInfo {
+    port: u16,
+    pid: u32,
+    process_name: String,
+    memory_kb: u64,
+}
+
 // ====================================================================
 // STATE
 // ====================================================================
@@ -52,6 +91,12 @@ struct AppSettings {
     project_path: String,
     port: u16,
     auto_start: bool,
+    #[serde(default = "default_theme")]
+    theme: String,
+}
+
+fn default_theme() -> String {
+    "system".to_string()
 }
 
 #[derive(Default)]
@@ -64,6 +109,8 @@ struct ServerState {
 struct AppState {
     server: Mutex<ServerState>,
     settings: Mutex<AppSettings>,
+    log_buffer: Mutex<Vec<String>>,
+    last_ip: Mutex<String>,
 }
 
 // ====================================================================
@@ -94,6 +141,7 @@ fn load_settings() -> AppSettings {
             .unwrap_or_default(),
         port: 3000,
         auto_start: false,
+        theme: "system".to_string(),
     }
 }
 
@@ -114,6 +162,29 @@ fn emit_log(window: &Window, message: &str, level: &str) {
     window
         .emit("server-log", LogPayload { message: message.to_string(), level: level.to_string() })
         .ok();
+    // Buffer logs for diagnostic export
+    if let Some(state) = window.try_state::<AppState>() {
+        if let Ok(mut buf) = state.log_buffer.lock() {
+            let ts = chrono_now();
+            buf.push(format!("[{}] [{}] {}", ts, level.to_uppercase(), message));
+            if buf.len() > 2000 {
+                let drain = buf.len() - 1500;
+                buf.drain(..drain);
+            }
+        }
+    }
+}
+
+/// Simple timestamp (no chrono crate needed)
+fn chrono_now() -> String {
+    let output = Command::new("cmd")
+        .args(["/C", "echo %TIME% %DATE%"])
+        .creation_flags(0x08000000)
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => "unknown".to_string(),
+    }
 }
 
 /// Emit boot stage to frontend
@@ -133,6 +204,57 @@ fn normalize_path(p: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(p)
     }
+}
+
+/// Detect if a port is in use – returns conflict info with process details
+fn detect_port_conflict(port: u16) -> Option<PortConflictInfo> {
+    let check = Command::new("cmd")
+        .args(["/C", &format!("netstat -ano | findstr \":{} \" | findstr LISTENING", port)])
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+
+    let stdout_str = String::from_utf8_lossy(&check.stdout);
+    for line in stdout_str.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(pid_str) = parts.last() {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if pid > 0 {
+                    // Get process name and memory via tasklist
+                    let (process_name, memory_kb) = get_process_info(pid);
+                    return Some(PortConflictInfo {
+                        port,
+                        pid,
+                        process_name,
+                        memory_kb,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Get process name and memory from PID
+fn get_process_info(pid: u32) -> (String, u64) {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+        .creation_flags(0x08000000)
+        .output();
+
+    if let Ok(out) = output {
+        let line = String::from_utf8_lossy(&out.stdout);
+        // CSV format: "process.exe","12345","Console","1","118,696 K"
+        let fields: Vec<&str> = line.trim().split(',').collect();
+        if fields.len() >= 5 {
+            let name = fields[0].trim_matches('"').to_string();
+            let mem_str = fields[4].trim_matches('"').trim()
+                .replace(" K", "").replace(".", "").replace(",", "");
+            let mem = mem_str.trim().parse::<u64>().unwrap_or(0);
+            return (name, mem);
+        }
+    }
+    ("desconocido".into(), 0)
 }
 
 /// Find node.exe in PATH
@@ -422,6 +544,72 @@ fn save_settings(settings: AppSettings, state: tauri::State<AppState>) -> Result
     Ok(())
 }
 
+/// Check if a port has a conflict — returns info or null
+#[tauri::command]
+fn check_port(port: u16) -> Option<PortConflictInfo> {
+    detect_port_conflict(port)
+}
+
+/// Kill the process using a specific port, returns success message
+#[tauri::command]
+fn kill_port_process(window: Window, port: u16) -> Result<String, String> {
+    let conflict = detect_port_conflict(port)
+        .ok_or_else(|| format!("No hay conflicto en el puerto {}", port))?;
+
+    emit_log(
+        &window,
+        &format!("🔪 Matando '{}' (PID {}) en puerto {}...", conflict.process_name, conflict.pid, port),
+        "warn",
+    );
+
+    let kill = Command::new("taskkill")
+        .args(["/F", "/PID", &conflict.pid.to_string()])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Error ejecutando taskkill: {}", e))?;
+
+    if kill.status.success() {
+        thread::sleep(Duration::from_millis(500));
+        // Double-check it's actually free
+        if detect_port_conflict(port).is_some() {
+            emit_log(&window, "⚠️ El proceso persiste. Probá reiniciar la PC.", "error");
+            return Err("El proceso no pudo ser terminado completamente".into());
+        }
+        emit_log(
+            &window,
+            &format!("✅ Proceso '{}' (PID {}) terminado. Puerto {} libre.", conflict.process_name, conflict.pid, port),
+            "success",
+        );
+        Ok(format!("Proceso '{}' terminado exitosamente", conflict.process_name))
+    } else {
+        let stderr = String::from_utf8_lossy(&kill.stderr);
+        emit_log(
+            &window,
+            &format!("❌ No se pudo matar PID {}: {}", conflict.pid, stderr.trim()),
+            "error",
+        );
+        Err(format!("No se pudo matar el proceso: {}", stderr.trim()))
+    }
+}
+
+/// Suggest an available port near the desired one  
+#[tauri::command]
+fn suggest_available_port(desired: u16) -> u16 {
+    // Try from desired+1 up to desired+100
+    for p in (desired + 1)..=(desired + 100) {
+        if detect_port_conflict(p).is_none() {
+            return p;
+        }
+    }
+    // Fallback: try common alternatives
+    for p in [3001, 3002, 4000, 5000, 8000, 8080] {
+        if detect_port_conflict(p).is_none() {
+            return p;
+        }
+    }
+    desired + 1 // last resort
+}
+
 #[tauri::command]
 async fn start_server(window: Window, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let settings = state.settings.lock().unwrap().clone();
@@ -504,6 +692,34 @@ async fn start_server(window: Window, state: tauri::State<'_, AppState>) -> Resu
 
     emit_log(&window, &format!("CMD: {} {} (cwd: {})", n_node, n_server, n_cwd), "info");
 
+    // ===== CHECK PORT CONFLICT (interactive) =====
+    {
+        let port = settings.port;
+        emit_log(&window, &format!("🔍 Verificando si el puerto {} está en uso...", port), "info");
+        if let Some(conflict) = detect_port_conflict(port) {
+            emit_log(
+                &window,
+                &format!(
+                    "⚠️ ¡CONFLICTO DE PUERTO! El puerto {} está ocupado por '{}' (PID: {}, Memoria: {} KB)",
+                    conflict.port, conflict.process_name, conflict.pid, conflict.memory_kb
+                ),
+                "error",
+            );
+            emit_log(
+                &window,
+                "💡 Sugerencias: Matá el proceso ocupante, cambiá el puerto en Configuración, o reiniciá la PC.",
+                "warn",
+            );
+            window.emit("port-conflict", conflict.clone()).ok();
+            window.emit("server-status", "stopped").ok();
+            return Err(format!(
+                "Puerto {} ocupado por '{}' (PID {}). Elegí una acción en el diálogo.",
+                conflict.port, conflict.process_name, conflict.pid
+            ));
+        }
+        emit_log(&window, &format!("✅ Puerto {} disponible", port), "success");
+    }
+
     // ===== LAUNCH NODE.JS =====
     let mut cmd = Command::new(n_node.as_ref());
     cmd.arg(n_server.as_ref())
@@ -580,7 +796,12 @@ async fn start_server(window: Window, state: tauri::State<'_, AppState>) -> Resu
 async fn stop_server(window: Window, state: tauri::State<'_, AppState>) -> Result<(), String> {
     emit_log(&window, "Deteniendo servidor...", "info");
 
+    let port;
     let project_root;
+    {
+        let settings = state.settings.lock().unwrap();
+        port = settings.port;
+    }
     {
         let mut server = state.server.lock().unwrap();
         project_root = server.project_root.take();
@@ -593,6 +814,31 @@ async fn stop_server(window: Window, state: tauri::State<'_, AppState>) -> Resul
             emit_log(&window, "No hay servidor corriendo", "warn");
         }
         server.status = "stopped".into();
+    }
+
+    // Fallback: also kill any process still holding the port
+    {
+        let check = Command::new("cmd")
+            .args(["/C", &format!("netstat -ano | findstr \":{} \" | findstr LISTENING", port)])
+            .creation_flags(0x08000000)
+            .output();
+        if let Ok(out) = check {
+            let stdout_str = String::from_utf8_lossy(&out.stdout);
+            for line in stdout_str.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(pid_str) = parts.last() {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if pid > 0 {
+                            emit_log(&window, &format!("🔪 Matando proceso zombie en puerto {} (PID {})", port, pid), "warn");
+                            let _ = Command::new("taskkill")
+                                .args(["/F", "/PID", &pid.to_string()])
+                                .creation_flags(0x08000000)
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Stop docker compose
@@ -690,6 +936,286 @@ async fn select_folder(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 // ====================================================================
+// NETWORK & DIAGNOSTICS COMMANDS
+// ====================================================================
+
+/// Get local Wi-Fi IP address using UDP socket trick (no actual connection)
+#[tauri::command]
+fn get_local_ip() -> Result<String, String> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Error binding socket: {}", e))?;
+    socket
+        .connect("8.8.8.8:80")
+        .map_err(|e| format!("Error connecting: {}", e))?;
+    let addr = socket
+        .local_addr()
+        .map_err(|e| format!("Error getting local addr: {}", e))?;
+    Ok(addr.ip().to_string())
+}
+
+/// Get current Wi-Fi SSID on Windows
+#[tauri::command]
+fn get_wifi_ssid() -> Result<String, String> {
+    let mut cmd = Command::new("netsh");
+    cmd.args(["wlan", "show", "interfaces"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let output = cmd.output().map_err(|e| format!("Error netsh: {}", e))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("SSID") && !trimmed.starts_with("SSID BSSID") && !trimmed.contains("BSSID") {
+            if let Some(val) = trimmed.split(':').nth(1) {
+                let ssid = val.trim().to_string();
+                if !ssid.is_empty() {
+                    return Ok(ssid);
+                }
+            }
+        }
+    }
+    Ok("No Wi-Fi".to_string())
+}
+
+/// Get full network info: IP + SSID + adapter
+#[tauri::command]
+fn get_network_info() -> Result<NetworkInfo, String> {
+    let ip = get_local_ip().unwrap_or_else(|_| "desconocida".into());
+    let ssid = get_wifi_ssid().unwrap_or_else(|_| "desconocido".into());
+
+    // Get adapter name
+    let mut cmd = Command::new("netsh");
+    cmd.args(["wlan", "show", "interfaces"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let adapter = match cmd.output() {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            text.lines()
+                .find(|l| l.trim().starts_with("Nombre") || l.trim().starts_with("Name"))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| "Desconocido".to_string())
+        }
+        Err(_) => "Desconocido".to_string(),
+    };
+
+    Ok(NetworkInfo { ip, ssid, adapter })
+}
+
+/// Poll network changes - returns new IP if changed
+#[tauri::command]
+fn check_network_change(state: tauri::State<AppState>) -> Result<Option<NetworkInfo>, String> {
+    let current_ip = get_local_ip().unwrap_or_default();
+    let mut last = state.last_ip.lock().unwrap();
+    if *last != current_ip && !current_ip.is_empty() {
+        *last = current_ip.clone();
+        let info = get_network_info()?;
+        Ok(Some(info))
+    } else {
+        if last.is_empty() {
+            *last = current_ip;
+        }
+        Ok(None)
+    }
+}
+
+/// Get Docker status info
+#[tauri::command]
+fn get_docker_status() -> Result<String, String> {
+    let mut cmd = Command::new("docker");
+    cmd.args(["info", "--format", "{{.ServerVersion}}"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            Ok(format!("Docker v{}", String::from_utf8_lossy(&o.stdout).trim()))
+        }
+        _ => Ok("Docker no disponible".to_string()),
+    }
+}
+
+/// Get Docker containers list
+#[tauri::command]
+fn get_docker_containers() -> Result<Vec<String>, String> {
+    let mut cmd = Command::new("docker");
+    cmd.args(["ps", "--format", "{{.Names}} | {{.Status}} | {{.Image}}"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            Ok(text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        }
+        _ => Ok(vec![]),
+    }
+}
+
+/// Get CPU and Memory usage of current process
+#[tauri::command]
+fn get_system_stats() -> Result<HashMap<String, f64>, String> {
+    let pid = std::process::id();
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command",
+        &format!(
+            "Get-Process -Id {} | Select-Object CPU, WorkingSet64 | ConvertTo-Json",
+            pid
+        )]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut stats = HashMap::new();
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                stats.insert("cpu".to_string(), val["CPU"].as_f64().unwrap_or(0.0));
+                stats.insert(
+                    "memory_mb".to_string(),
+                    val["WorkingSet64"].as_f64().unwrap_or(0.0) / 1_048_576.0,
+                );
+            }
+        }
+        _ => {
+            stats.insert("cpu".to_string(), 0.0);
+            stats.insert("memory_mb".to_string(), 0.0);
+        }
+    }
+    Ok(stats)
+}
+
+/// Export full diagnostic bundle
+#[tauri::command]
+fn get_diagnostic_bundle(state: tauri::State<AppState>) -> Result<DiagnosticBundle, String> {
+    let network = get_network_info().unwrap_or(NetworkInfo {
+        ip: "desconocida".into(),
+        ssid: "desconocido".into(),
+        adapter: "desconocido".into(),
+    });
+    let docker_status = get_docker_status().unwrap_or_else(|_| "no disponible".into());
+    let docker_containers = get_docker_containers().unwrap_or_default();
+    let sys_stats = get_system_stats().unwrap_or_default();
+
+    let logs = state.log_buffer.lock().unwrap().clone();
+
+    // OS info
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", "ver"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let os_info = cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "Windows".to_string());
+
+    Ok(DiagnosticBundle {
+        timestamp: chrono_now(),
+        network,
+        docker_status,
+        docker_containers,
+        cpu_usage: *sys_stats.get("cpu").unwrap_or(&0.0),
+        memory_mb: *sys_stats.get("memory_mb").unwrap_or(&0.0),
+        logs,
+        app_version: "1.1.0".to_string(),
+        os_info,
+    })
+}
+
+/// Save diagnostic bundle to file
+#[tauri::command]
+async fn export_diagnostic_bundle(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+    let bundle = get_diagnostic_bundle(state)?;
+    let json = serde_json::to_string_pretty(&bundle)
+        .map_err(|e| format!("Error serializando diagnóstico: {}", e))?;
+
+    let path = app.dialog().file()
+        .add_filter("JSON", &["json"])
+        .set_file_name("chavalos-diagnostic.json")
+        .blocking_save_file();
+
+    if let Some(p) = path {
+        let pb: PathBuf = p.as_path().ok_or("Ruta inválida")?.to_path_buf();
+        fs::write(&pb, json).map_err(|e| format!("Error guardando: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Save latest.log file to app data directory
+#[tauri::command]
+fn save_latest_log(state: tauri::State<AppState>) -> Result<String, String> {
+    let logs = state.log_buffer.lock().unwrap();
+    let log_dir = get_settings_path().parent().unwrap().to_path_buf();
+    let log_path = log_dir.join("latest.log");
+    let content = logs.join("\n");
+    fs::write(&log_path, &content)
+        .map_err(|e| format!("Error guardando log: {}", e))?;
+    Ok(log_path.to_string_lossy().to_string())
+}
+
+/// Open default email client for sending diagnostic report
+#[tauri::command]
+async fn send_report_email(app: tauri::AppHandle) -> Result<(), String> {
+    #[allow(deprecated)]
+    use tauri_plugin_shell::ShellExt;
+    let subject = "Reporte%20Chavalos%20Server";
+    let body = "Adjuntar%20el%20archivo%20chavalos-diagnostic.json%20generado%20desde%20la%20app.";
+    let mailto = format!("mailto:soporte@chavalos.com?subject={}&body={}", subject, body);
+    #[allow(deprecated)]
+    app.shell().open(&mailto, None)
+        .map_err(|e| format!("Error abriendo email: {}", e))?;
+    Ok(())
+}
+
+/// Get active connections to the Next.js server (via netstat)
+#[tauri::command]
+fn get_connected_devices(state: tauri::State<AppState>) -> Result<Vec<HashMap<String, String>>, String> {
+    let port = state.settings.lock().unwrap().port;
+    let mut cmd = Command::new("netstat");
+    cmd.args(["-an"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let output = cmd.output().map_err(|e| format!("Error netstat: {}", e))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let local_ip = get_local_ip().unwrap_or_default();
+    let port_str = port.to_string();
+    let mut devices: Vec<HashMap<String, String>> = Vec::new();
+    let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 && parts[0] == "TCP" {
+            let local_addr = parts[1];
+            let remote_addr = parts[2];
+            let state_str = parts[3];
+
+            // Match connections to our port
+            if local_addr.ends_with(&format!(":{}", port_str)) && state_str == "ESTABLISHED" {
+                // Extract remote IP
+                if let Some(colon_pos) = remote_addr.rfind(':') {
+                    let remote_ip = &remote_addr[..colon_pos];
+                    // Skip localhost connections and already seen IPs
+                    if remote_ip != "127.0.0.1" && remote_ip != local_ip && remote_ip != "[::1]" {
+                        if seen_ips.insert(remote_ip.to_string()) {
+                            let mut device = HashMap::new();
+                            device.insert("ip".to_string(), remote_ip.to_string());
+                            device.insert("address".to_string(), remote_addr.to_string());
+                            device.insert("state".to_string(), state_str.to_string());
+                            devices.push(device);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(devices)
+}
+
+// ====================================================================
 // TAURI APP ENTRY
 // ====================================================================
 
@@ -702,9 +1228,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Chavalos Server")
+                .build(),
+        )
         .manage(AppState {
             server: Mutex::new(ServerState::default()),
             settings: Mutex::new(settings),
+            log_buffer: Mutex::new(Vec::new()),
+            last_ip: Mutex::new(String::new()),
         })
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -746,7 +1279,25 @@ pub fn run() {
                                 });
                             }
                         }
-                        "quit" => std::process::exit(0),
+                        "quit" => {
+                            // Matar proceso Node.js antes de salir
+                            let state = app.state::<AppState>();
+                            if let Ok(mut server) = state.server.lock() {
+                                if let Some(mut process) = server.process.take() {
+                                    let _ = process.kill();
+                                    let _ = process.wait();
+                                }
+                                server.status = "stopped".into();
+                            }
+                            // Matar sidecar node por si quedó huérfano
+                            let mut cmd = Command::new("taskkill");
+                            cmd.args(["/F", "/IM", "node-x86_64-pc-windows-msvc.exe", "/T"]);
+                            #[cfg(windows)]
+                            cmd.creation_flags(0x08000000);
+                            let _ = cmd.output();
+
+                            std::process::exit(0);
+                        }
                         _ => {}
                     }
                 })
@@ -776,11 +1327,26 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            check_port,
+            kill_port_process,
+            suggest_available_port,
             start_server,
             stop_server,
             copy_to_clipboard,
             export_logs,
             select_folder,
+            get_local_ip,
+            get_wifi_ssid,
+            get_network_info,
+            check_network_change,
+            get_docker_status,
+            get_docker_containers,
+            get_system_stats,
+            get_diagnostic_bundle,
+            export_diagnostic_bundle,
+            save_latest_log,
+            send_report_email,
+            get_connected_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

@@ -5,12 +5,14 @@ import Image from 'next/image'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
+import { SearchBar } from '@/ui/components/SearchBar'
 import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
 import { ShareWhatsAppModal } from '@/ui/components/ShareWhatsAppModal'
 import { PAYMENT_INFO, PaymentMethodUi, formatWhatsAppPaymentText } from '@/lib/payment-info'
 import { generatePaymentCardPng } from '@/lib/payment-share-image'
 import { shareWhatsAppWithImage } from '@/lib/share-whatsapp'
+import { useProductSearch } from '@/ui/hooks/useProductSearch'
 import styles from './caja.module.css'
 
 // Unidades que permiten decimales (consistente con backend)
@@ -133,9 +135,22 @@ interface CajaViewProps {
 
 export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const { notify } = useToast()
-  const [products, setProducts] = useState<Product[]>(initialProducts)
-  const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
+
+  // ── SWR + Debounce + AbortController (búsqueda optimizada para LAN) ──
+  const {
+    products,
+    isStale,
+    isSearching,
+    refresh,
+  } = useProductSearch(search, {
+    limit: 20,
+    inStockOnly: true,
+    includePresentations: true,
+    debounceMs: 300,
+  })
+
+  const [cart, setCart] = useState<CartItem[]>([])
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodUi>('EFECTIVO')
   const [loading, setLoading] = useState(false)
@@ -173,6 +188,30 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     mode: 'DESCUENTO_PORCENTAJE',
     value: 0,
     reason: ''
+  });
+
+  // Estado para descuento global a la venta
+  const [globalDiscount, setGlobalDiscount] = useState<{
+    active: boolean
+    mode: 'PORCENTAJE' | 'MONTO_FIJO'
+    value: number
+    reason: string
+  }>({
+    active: false,
+    mode: 'PORCENTAJE',
+    value: 0,
+    reason: ''
+  })
+  const [globalDiscountModal, setGlobalDiscountModal] = useState<{
+    show: boolean
+    mode: 'PORCENTAJE' | 'MONTO_FIJO'
+    value: number
+    reason: string
+  }>({
+    show: false,
+    mode: 'PORCENTAJE',
+    value: 0,
+    reason: ''
   })
   const initialHydratedRef = useRef<boolean>(initialProducts.length > 0)
 
@@ -208,40 +247,28 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     }
   }, [cart, paymentMethod, cartHydrated])
 
-  useEffect(() => {
-    if (!search && initialHydratedRef.current) {
-      initialHydratedRef.current = false
-      return
-    }
-    loadProducts()
-  }, [search])
-
   const productsById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
 
-  const loadProducts = async () => {
-    try {
-      const params = new URLSearchParams()
-      if (search) params.append('search', search)
-      params.append('isActive', 'true')
-      params.append('limit', '20')
-
-      const res = await fetch(`/api/products?${params}`, { cache: 'no-store' })
-      const data = await res.json()
-      setProducts(data.products.filter((p: Product) => p.stock > 0))
-    } catch (error) {
-      console.error('Error cargando productos:', error)
-    }
-  }
+  // Clave estable basada en el CONTENIDO de los productos (no en la referencia del array).
+  // Esto evita que el useEffect se dispare infinitamente por cambios de referencia.
+  const productsVersion = useMemo(
+    () => products.map(p => `${p.id}:${p.price}:${p.stock}:${p.unit}`).join('|'),
+    [products]
+  )
 
   // Sincronizar carrito cuando se refresca la lista de productos (unidad/presentaciones pueden cambiar)
   useEffect(() => {
-    if (!products.length || !cartHydrated) return
+    if (!productsVersion || !cartHydrated) return
 
     setCart((current) => {
       if (!current.length) return current
 
+      // Construir mapa dentro del callback para usar datos frescos sin depender de refs
+      const pMap = new Map(products.map((p) => [p.id, p]))
+
+      let changed = false
       const updatedCart = current.map((item) => {
-        const updatedProduct = productsById.get(item.product.id)
+        const updatedProduct = pMap.get(item.product.id)
         if (!updatedProduct) return item
 
         // Mantener presentación elegida; si no existe, caer a default del producto
@@ -266,6 +293,18 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
               item.product.unit ||
               'UNIDAD'
 
+        // Comparar por VALOR, no por referencia — los objetos de localStorage nunca son === a los de la API
+        if (
+          item.product.price !== updatedProduct.price ||
+          item.product.stock !== updatedProduct.stock ||
+          item.product.unit !== updatedProduct.unit ||
+          item.product.name !== updatedProduct.name ||
+          item.presentation?.id !== updatedPresentation?.id ||
+          item.unitType !== effectiveUnit
+        ) {
+          changed = true
+        }
+
         return {
           ...item,
           product: updatedProduct,
@@ -276,15 +315,21 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
         }
       })
 
-      return updatedCart
+      // Si nada cambió por VALOR, devolver la misma referencia para evitar re-renders
+      return changed ? updatedCart : current
     })
-  }, [products, productsById, cartHydrated])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productsVersion, cartHydrated])
 
   const getEffectivePresentation = (item: CartItem): ProductPresentation | null => {
+    // Intentar primero con datos live del search, luego con datos almacenados en el cart item
     const liveProduct = productsById.get(item.product.id)
+    const storedProduct = item.product
+
     if (item.presentationId) {
       return (
         liveProduct?.presentations?.find((p) => p.id === item.presentationId) ||
+        storedProduct.presentations?.find((p) => p.id === item.presentationId) ||
         item.presentation ||
         null
       )
@@ -292,7 +337,9 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     return (
       item.presentation ||
       liveProduct?.presentations?.find((p) => p.isDefault) ||
+      storedProduct.presentations?.find((p) => p.isDefault) ||
       liveProduct?.presentations?.[0] ||
+      storedProduct.presentations?.[0] ||
       null
     )
   }
@@ -389,6 +436,8 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
         },
       ])
     }
+
+    notify({ type: 'success', title: 'Producto sumado al carrito', message: product.name })
   }
 
   const updateQuantity = (productId: string, presentationId: string | null, delta: number) => {
@@ -409,6 +458,17 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
 
   const removeFromCart = (productId: string, presentationId: string | null) => {
     setCart(cart.filter((item) => !(item.product.id === productId && item.presentationId === presentationId)))
+  }
+
+  // Calcular unitPrice: busca en presentación efectiva (live+stored) con múltiples fallbacks
+  function getUnitPrice(item: CartItem): number {
+    if (item.adjustedUnitPrice !== undefined) return item.adjustedUnitPrice
+    const pres = getEffectivePresentation(item)
+    if (pres && pres.computedUnitPrice != null) return pres.computedUnitPrice
+    if (item.presentation?.computedUnitPrice != null) return item.presentation.computedUnitPrice
+    const storedPres = item.product.presentations?.find(p => p.isDefault) || item.product.presentations?.[0]
+    if (storedPres?.computedUnitPrice != null) return storedPres.computedUnitPrice
+    return item.product.price || 0
   }
 
   const openPriceAdjustModal = (itemIndex: number) => {
@@ -435,7 +495,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     }
 
     const item = cart[itemIndex]
-    const originalPrice = item.presentation?.computedUnitPrice || 0
+    const originalPrice = getUnitPrice(item)
     let newPrice = originalPrice
 
     if (mode === 'DESCUENTO_PORCENTAJE') {
@@ -480,25 +540,77 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     setCart(updatedCart)
   }
 
-  // Calcular unitPrice basado en presentación (usando computedUnitPrice del backend)
-  const getUnitPrice = (item: CartItem): number => {
-    // Si hay precio ajustado manualmente, usar ese
-    if (item.adjustedUnitPrice !== undefined) {
-      return item.adjustedUnitPrice
-    }
-    const pres = getEffectivePresentation(item)
-    if (!pres) return 0
-    return pres.computedUnitPrice
-  }
-
   const subtotal = useMemo(() => {
     return cart.reduce((sum, item) => {
-      const unitPrice = getUnitPrice(item)
-      return sum + unitPrice * item.soldQty
+      // Inline price calc to avoid any function ordering issues
+      let up = 0
+      if (item.adjustedUnitPrice !== undefined) { up = item.adjustedUnitPrice }
+      else if (item.presentation?.computedUnitPrice != null) { up = item.presentation.computedUnitPrice }
+      else {
+        const sp = item.product.presentations?.find(p => p.isDefault) || item.product.presentations?.[0]
+        if (sp?.computedUnitPrice != null) { up = sp.computedUnitPrice }
+        else { up = item.product.price || 0 }
+      }
+      return sum + up * item.soldQty
     }, 0)
   }, [cart])
   const tax = 0
-  const total = subtotal + tax
+
+  // Calcular descuento global
+  const globalDiscountAmount = useMemo(() => {
+    if (!globalDiscount.active) return 0
+    if (globalDiscount.mode === 'PORCENTAJE') {
+      return roundToDecimals(subtotal * (globalDiscount.value / 100), 2)
+    }
+    // MONTO_FIJO: no puede exceder el subtotal
+    return Math.min(globalDiscount.value, subtotal)
+  }, [globalDiscount, subtotal])
+
+  const total = subtotal + tax - globalDiscountAmount
+
+  const openGlobalDiscountModal = () => {
+    setGlobalDiscountModal({
+      show: true,
+      mode: globalDiscount.active ? globalDiscount.mode : 'PORCENTAJE',
+      value: globalDiscount.active ? globalDiscount.value : 0,
+      reason: globalDiscount.active ? globalDiscount.reason : ''
+    })
+  }
+
+  const applyGlobalDiscount = () => {
+    const { mode, value, reason } = globalDiscountModal
+
+    if (!reason.trim()) {
+      notify({ type: 'warning', title: 'Razón requerida', message: 'Indica el motivo de la bonificación' })
+      return
+    }
+    if (value <= 0) {
+      notify({ type: 'warning', title: 'Valor inválido', message: 'El descuento debe ser mayor a 0' })
+      return
+    }
+    if (mode === 'PORCENTAJE' && value > 100) {
+      notify({ type: 'warning', title: 'Porcentaje inválido', message: 'El porcentaje no puede superar 100%' })
+      return
+    }
+    if (mode === 'MONTO_FIJO' && value > subtotal) {
+      notify({ type: 'warning', title: 'Monto excede total', message: 'El descuento no puede superar el subtotal de la venta' })
+      return
+    }
+
+    setGlobalDiscount({
+      active: true,
+      mode,
+      value,
+      reason
+    })
+    setGlobalDiscountModal({ show: false, mode: 'PORCENTAJE', value: 0, reason: '' })
+    notify({ type: 'success', title: 'Descuento aplicado', message: `Bonificación de ${mode === 'PORCENTAJE' ? value + '%' : formatMoneyPEN(value)} aplicada a la venta` })
+  }
+
+  const removeGlobalDiscount = () => {
+    setGlobalDiscount({ active: false, mode: 'PORCENTAJE', value: 0, reason: '' })
+    notify({ type: 'info', title: 'Descuento removido', message: 'Se eliminó la bonificación de la venta' })
+  }
 
   const handleSharePayment = (method: PaymentMethodUi) => {
     setShareMethod(method)
@@ -547,6 +659,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   }
 
   const handleCheckout = async (forcePhysicalStock: boolean = false) => {
+    if (loading) return
     if (cart.length === 0) {
       notify({ type: 'warning', title: 'Carrito vacío', message: 'Agrega productos antes de finalizar' })
       return
@@ -594,7 +707,8 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       setCustomerName('')
       setInsufficientStockError(null)
       setOverrideNote('')
-      loadProducts()
+      setGlobalDiscount({ active: false, mode: 'PORCENTAJE', value: 0, reason: '' })
+      refresh()
     } catch (error) {
       console.error('Error en checkout:', error)
       notify({ type: 'error', title: 'Error al procesar', message: 'No se pudo completar la venta' })
@@ -675,36 +789,40 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       )}
 
       <div className={styles.container}>
-        <h1 className={styles.title}>Punto de Venta</h1>
-
         <div className={styles.layout}>
           <div className={styles.section}>
-            <h2 className={styles.sectionTitle}>Productos</h2>
+            <h2 className={styles.sectionTitle}>🔍 Productos</h2>
 
             <div className={styles.searchBox}>
-              <input
-                type="text"
-                placeholder="Buscar producto..."
+              <SearchBar
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className={styles.searchInput}
+                onChange={setSearch}
+                placeholder="Nombre, código o SKU..."
+                loading={isSearching || isStale}
               />
             </div>
 
             <div className={styles.productsGrid}>
+              {products.length === 0 && search && (
+                <div className={styles.noResults}>No se encontraron productos</div>
+              )}
               {products.map((product) => (
                 <div
                   key={product.id}
                   className={styles.productCard}
                   onClick={() => addToCart(product)}
                 >
-                  <div className={styles.productSku}>{product.sku}</div>
-                  <div className={styles.productName}>{product.name}</div>
+                  <div className={styles.productCardInfo}>
+                    <div className={styles.productName}>{product.name}</div>
+                    <div className={styles.productMeta}>
+                      <span className={styles.productSku}>{product.sku}</span>
+                      <span className={styles.productStock}>
+                        Stock: {product.stock} {product.unit}
+                      </span>
+                    </div>
+                  </div>
                   <div className={styles.productPrice}>
                     {formatMoneyPEN(product.price)}
-                  </div>
-                  <div className={styles.productStock}>
-                    Stock: {product.stock} {product.unit}
                   </div>
                 </div>
               ))}
@@ -741,9 +859,15 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
 
               {cart.length === 0 ? (
                 <div className={styles.emptyCartState}>
-                  <div className={styles.emptyCartIcon}>🛒</div>
-                  <p className={styles.emptyCartText}>Tu carrito está vacío</p>
-                  <p className={styles.emptyCartSubtext}>Agrega productos para comenzar</p>
+                  <svg className={styles.emptyCartIllustration} viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="60" cy="60" r="56" fill="var(--bg-alt)" stroke="var(--border)" strokeWidth="2"/>
+                    <path d="M35 45h8l8 30h30l6-20H50" stroke="var(--text-muted)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                    <circle cx="55" cy="82" r="4" fill="var(--text-muted)"/>
+                    <circle cx="78" cy="82" r="4" fill="var(--text-muted)"/>
+                    <path d="M52 58h20M62 52v12" stroke="var(--primary)" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
+                  </svg>
+                  <p className={styles.emptyCartText}>Aún no hay productos</p>
+                  <p className={styles.emptyCartSubtext}>¡Empieza buscando uno arriba!</p>
                 </div>
               ) : (
                 <>
@@ -753,10 +877,14 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                       {cart.map((item, idx) => {
                         const effectivePresentation = getEffectivePresentation(item)
                         const unitPrice = getUnitPrice(item)
-                        const originalUnitPrice = effectivePresentation?.computedUnitPrice || 0
+                        const originalUnitPrice = effectivePresentation?.computedUnitPrice ||
+                          item.presentation?.computedUnitPrice ||
+                          item.product.presentations?.find(p => p.isDefault)?.computedUnitPrice ||
+                          item.product.price || 0
                         const unit = getEffectiveUnit(item)
                         const isDecimal = unitAllowsDecimals(unit)
                         const subtotalItem = roundToDecimals(unitPrice * item.soldQty, 2)
+
                         const selectedPresentationId =
                           item.presentationId ||
                           item.product.presentations?.find((p) => p.isDefault)?.id ||
@@ -766,33 +894,122 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                         return (
                           <div key={`${item.product.id}-${item.presentationId}-${idx}`} className={styles.cartItem}>
                             
-                            {/* Header del item: nombre y botón eliminar */}
+                            {/* #num */}
+                            <span className={styles.cartItemNumber}>#{idx + 1}</span>
+
+                            {/* Name [UNIT] [badge] */}
                             <div className={styles.cartItemHeader}>
                               <div className={styles.cartItemName}>
                                 {item.product.name}
-                                {item.presentation && (
+                                {item.presentation && item.presentation.name.toUpperCase() !== unit.toUpperCase() && (
                                   <span className={styles.cartItemPresentation}> · {item.presentation.name}</span>
                                 )}
-                                <span className={styles.cartItemPresentation}> · {unit}</span>
                               </div>
-                              <button
-                                className={styles.cartItemRemove}
-                                onClick={() => removeFromCart(item.product.id, item.presentationId)}
-                                aria-label="Eliminar producto"
-                                title="Eliminar"
-                              >
-                                ✕
-                              </button>
+                              <span className={styles.unitBadge}>{unit}</span>
+                              {item.priceAdjusted && (
+                                <span className={styles.badgeAdjusted} title={item.priceAdjustNote}>🏷️</span>
+                              )}
                             </div>
 
-                            {/* Badges de estado */}
-                            {item.priceAdjusted && (
-                              <div className={styles.badgeAdjusted} title={item.priceAdjustNote}>
-                                🏷️ Precio ajustado
+                            {/* [- qty +] */}
+                            <div className={styles.quantityControls}>
+                              <button
+                                className={styles.quantityBtn}
+                                onClick={() => {
+                                  const allowsDecimals = determineAllowsDecimals(unit)
+                                  const step = determineStep(unit, allowsDecimals)
+                                  const min = allowsDecimals ? 0.001 : 1
+                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
+                                  const newQty = Math.max(min, currentQty - step)
+                                  const normalized = normalizeQty(newQty, { step, min })
+                                  if (normalized && normalized >= min) {
+                                    setCart(
+                                      cart.map((cartItem, cartIdx) => {
+                                        if (cartIdx === idx) {
+                                          return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                        }
+                                        return cartItem
+                                      })
+                                    )
+                                  }
+                                }}
+                                aria-label="Disminuir cantidad"
+                              >−</button>
+                              <div className={styles.quantityDisplay}>
+                                <input
+                                  type="text"
+                                  inputMode={isDecimal ? 'decimal' : 'numeric'}
+                                  value={item.draftQty !== undefined ? item.draftQty : item.soldQty}
+                                  onChange={(e) => {
+                                    let value = e.target.value
+                                    value = value.replace(',', '.')
+                                    if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                                      setCart(
+                                        cart.map((cartItem, cartIdx) => {
+                                          if (cartIdx === idx) {
+                                            return { ...cartItem, draftQty: value }
+                                          }
+                                          return cartItem
+                                        })
+                                      )
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    const allowsDecimals = determineAllowsDecimals(unit)
+                                    const step = determineStep(unit, allowsDecimals)
+                                    const min = allowsDecimals ? 0.001 : 1
+                                    const currentDraft = item.draftQty
+                                    if (!currentDraft || currentDraft.trim() === '') {
+                                      setCart(cart.map((cartItem, cartIdx) => {
+                                        if (cartIdx === idx) return { ...cartItem, draftQty: String(item.soldQty) }
+                                        return cartItem
+                                      }))
+                                      return
+                                    }
+                                    const normalized = normalizeQty(currentDraft, { step, min, allowAnyDecimal: true })
+                                    if (normalized && normalized >= min) {
+                                      setCart(cart.map((cartItem, cartIdx) => {
+                                        if (cartIdx === idx) return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                        return cartItem
+                                      }))
+                                    } else {
+                                      setCart(cart.map((cartItem, cartIdx) => {
+                                        if (cartIdx === idx) return { ...cartItem, soldQty: min, draftQty: String(min) }
+                                        return cartItem
+                                      }))
+                                    }
+                                  }}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                                  className={styles.quantityInput}
+                                  aria-label="Cantidad"
+                                />
+                                <span className={styles.quantityUnit}>{unit}</span>
                               </div>
-                            )}
+                              <button
+                                className={styles.quantityBtn}
+                                onClick={() => {
+                                  const allowsDecimals = determineAllowsDecimals(unit)
+                                  const step = determineStep(unit, allowsDecimals)
+                                  const min = allowsDecimals ? 0.001 : 1
+                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
+                                  const newQty = currentQty + step
+                                  const normalized = normalizeQty(newQty, { step, min })
+                                  if (normalized) {
+                                    setCart(
+                                      cart.map((cartItem, cartIdx) => {
+                                        if (cartIdx === idx) {
+                                          return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                        }
+                                        return cartItem
+                                      })
+                                    )
+                                  }
+                                }}
+                                aria-label="Aumentar cantidad"
+                              >+</button>
+                            </div>
 
-                            {/* Selector de presentación si hay múltiples */}
+                            {/* Presentation selector if multiple */}
                             {item.product.presentations && item.product.presentations.length > 1 && (
                               <div className={styles.presentationSelector}>
                                 <select
@@ -801,16 +1018,11 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                                     const newPresentationId = e.target.value
                                     const newPresentation =
                                       item.product.presentations?.find((p) => p.id === newPresentationId) || null
-                                    
-                                    // Al cambiar presentación, recalcular qty basado en nueva unidad
                                     const newUnit = newPresentation?.unit || item.product.unit
                                     const allowsDecimals = determineAllowsDecimals(newUnit)
                                     const step = determineStep(newUnit, allowsDecimals)
                                     const min = allowsDecimals ? 0.001 : 1
-
-                                    // Normalizar la cantidad actual con el nuevo step
                                     const normalized = normalizeQty(item.soldQty, { step, min, allowAnyDecimal: true }) || min
-                                    
                                     setCart(
                                       cart.map((cartItem, cartIdx) => {
                                         if (cartIdx === idx) {
@@ -839,7 +1051,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                               </div>
                             )}
 
-                            {/* Precio y cantidad */}
+                            {/* Pricing */}
                             <div className={styles.cartItemPricing}>
                               <div className={styles.priceInfo}>
                                 {item.priceAdjusted && (
@@ -848,7 +1060,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                                   </div>
                                 )}
                                 <div className={styles.priceUnit}>
-                                  {formatMoneyPEN(unitPrice)} / {unit}
+                                  {formatMoneyPEN(unitPrice)}/{unit}
                                 </div>
                               </div>
                               <div className={styles.priceSubtotal}>
@@ -856,164 +1068,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                               </div>
                             </div>
 
-                            {/* Controles de cantidad - botones grandes táctiles */}
-                            <div className={styles.quantityControls}>
-                              <button
-                                className={styles.quantityBtn}
-                                onClick={() => {
-                                  const allowsDecimals = determineAllowsDecimals(unit)
-                                  const step = determineStep(unit, allowsDecimals)
-                                  const min = allowsDecimals ? 0.001 : 1
-                                  
-                                  // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
-                                  const newQty = Math.max(min, currentQty - step)
-                                  const normalized = normalizeQty(newQty, { step, min })
-                                  
-                                  if (normalized && normalized >= min) {
-                                    setCart(
-                                      cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) {
-                                          return {
-                                            ...cartItem,
-                                            soldQty: normalized,
-                                            draftQty: String(normalized),
-                                          }
-                                        }
-                                        return cartItem
-                                      })
-                                    )
-                                  }
-                                }}
-                                aria-label="Disminuir cantidad"
-                              >
-                                −
-                              </button>
-                              <div className={styles.quantityDisplay}>
-                                <input
-                                  type="text"
-                                  inputMode={isDecimal ? 'decimal' : 'numeric'}
-                                  value={item.draftQty !== undefined ? item.draftQty : item.soldQty}
-                                  onChange={(e) => {
-                                    let value = e.target.value
-                                    
-                                    // Reemplazar coma por punto
-                                    value = value.replace(',', '.')
-                                    
-                                    // Permitir: vacío, números, punto decimal, cero
-                                    if (value === '' || /^\d*\.?\d*$/.test(value)) {
-                                      setCart(
-                                        cart.map((cartItem, cartIdx) => {
-                                          if (cartIdx === idx) {
-                                            return {
-                                              ...cartItem,
-                                              draftQty: value,
-                                            }
-                                          }
-                                          return cartItem
-                                        })
-                                      )
-                                    }
-                                  }}
-                                  onBlur={() => {
-                                    const allowsDecimals = determineAllowsDecimals(unit)
-                                    const step = determineStep(unit, allowsDecimals)
-                                    const min = allowsDecimals ? 0.001 : 1
-                                    
-                                    const currentDraft = item.draftQty
-                                    
-                                    // Si está vacío o inválido, restaurar a soldQty actual o mínimo
-                                    if (!currentDraft || currentDraft.trim() === '') {
-                                      setCart(
-                                        cart.map((cartItem, cartIdx) => {
-                                          if (cartIdx === idx) {
-                                            return {
-                                              ...cartItem,
-                                              draftQty: String(item.soldQty),
-                                            }
-                                          }
-                                          return cartItem
-                                        })
-                                      )
-                                      return
-                                    }
-                                    
-                                    // Normalizar y aplicar
-                                    const normalized = normalizeQty(currentDraft, { step, min, allowAnyDecimal: true })
-                                    
-                                    if (normalized && normalized >= min) {
-                                      setCart(
-                                        cart.map((cartItem, cartIdx) => {
-                                          if (cartIdx === idx) {
-                                            return {
-                                              ...cartItem,
-                                              soldQty: normalized,
-                                              draftQty: String(normalized),
-                                            }
-                                          }
-                                          return cartItem
-                                        })
-                                      )
-                                    } else {
-                                      // Si no es válido, volver al mínimo
-                                      setCart(
-                                        cart.map((cartItem, cartIdx) => {
-                                          if (cartIdx === idx) {
-                                            return {
-                                              ...cartItem,
-                                              soldQty: min,
-                                              draftQty: String(min),
-                                            }
-                                          }
-                                          return cartItem
-                                        })
-                                      )
-                                    }
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.currentTarget.blur()
-                                    }
-                                  }}
-                                  className={styles.quantityInput}
-                                  aria-label="Cantidad"
-                                />
-                                <span className={styles.quantityUnit}>{unit}</span>
-                              </div>
-                              <button
-                                className={styles.quantityBtn}
-                                onClick={() => {
-                                  const allowsDecimals = determineAllowsDecimals(unit)
-                                  const step = determineStep(unit, allowsDecimals)
-                                  const min = allowsDecimals ? 0.001 : 1
-                                  
-                                  // Obtener cantidad actual (usar draftQty si existe y es válido, sino soldQty)
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
-                                  const newQty = currentQty + step
-                                  const normalized = normalizeQty(newQty, { step, min })
-                                  
-                                  if (normalized) {
-                                    setCart(
-                                      cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) {
-                                          return {
-                                            ...cartItem,
-                                            soldQty: normalized,
-                                            draftQty: String(normalized),
-                                          }
-                                        }
-                                        return cartItem
-                                      })
-                                    )
-                                  }
-                                }}
-                                aria-label="Aumentar cantidad"
-                              >
-                                +
-                              </button>
-                            </div>
-
-                            {/* Botones de ajuste de precio (solo ADMIN) */}
+                            {/* Admin adjust price (only ADMIN) */}
                             {user.role === 'ADMIN' && (
                               <div className={styles.adminActions}>
                                 {!item.priceAdjusted ? (
@@ -1021,20 +1076,25 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                                     className={styles.btnAdjustPrice}
                                     onClick={() => openPriceAdjustModal(idx)}
                                     title="Ajustar precio"
-                                  >
-                                    💰 Ajustar precio
-                                  </button>
+                                  >💰</button>
                                 ) : (
                                   <button
                                     className={styles.btnRemoveAdjust}
                                     onClick={() => removePriceAdjust(idx)}
                                     title="Quitar ajuste de precio"
-                                  >
-                                    ✕ Quitar ajuste
-                                  </button>
+                                  >✕</button>
                                 )}
                               </div>
                             )}
+
+                            {/* ✕ Remove — always last, pushed to far right */}
+                            <button
+                              className={styles.cartItemRemove}
+                              onClick={() => removeFromCart(item.product.id, item.presentationId)}
+                              aria-label="Eliminar producto"
+                              title="Eliminar"
+                            >✕</button>
+
                           </div>
                         )
                       })}
@@ -1052,12 +1112,63 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                       </div>
                       {tax > 0 && (
                         <div className={styles.totalRow}>
-                          <span className={styles.totalLabel}>IVA</span>
+                          <span className={styles.totalLabel}>Impuestos</span>
                           <span className={styles.totalValue}>{formatMoneyPEN(tax)}</span>
                         </div>
                       )}
+
+                      {/* Línea de descuento global */}
+                      {globalDiscount.active && (
+                        <div className={`${styles.totalRow} ${styles.discountRow}`}>
+                          <span className={styles.discountLabel}>
+                            🏷️ Bonificación
+                            <span className={styles.discountDetail}>
+                              ({globalDiscount.mode === 'PORCENTAJE' ? `${globalDiscount.value}%` : 'Fijo'})
+                            </span>
+                          </span>
+                          <span className={styles.discountValue}>- {formatMoneyPEN(globalDiscountAmount)}</span>
+                        </div>
+                      )}
+
+                      {/* Botón de descuento global (solo ADMIN) */}
+                      {user.role === 'ADMIN' && (
+                        <div className={styles.globalDiscountActions}>
+                          {!globalDiscount.active ? (
+                            <button
+                              type="button"
+                              className={styles.btnGlobalDiscount}
+                              onClick={openGlobalDiscountModal}
+                            >
+                              🏷️ Aplicar Descuento a la Venta
+                            </button>
+                          ) : (
+                            <div className={styles.globalDiscountActive}>
+                              <span className={styles.globalDiscountNote} title={globalDiscount.reason}>
+                                📝 {globalDiscount.reason}
+                              </span>
+                              <div className={styles.globalDiscountBtns}>
+                                <button
+                                  type="button"
+                                  className={styles.btnEditDiscount}
+                                  onClick={openGlobalDiscountModal}
+                                >
+                                  ✏️ Editar
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.btnRemoveDiscount}
+                                  onClick={removeGlobalDiscount}
+                                >
+                                  ✕ Quitar
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <div className={styles.totalRowFinal}>
-                        <span className={styles.totalLabelFinal}>Total</span>
+                        <span className={styles.totalLabelFinal}>Total a Pagar</span>
                         <span className={styles.totalValueFinal}>{formatMoneyPEN(total)}</span>
                       </div>
                     </div>
@@ -1066,7 +1177,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                     <div className={styles.checkoutFormSection}>
                       <div className={styles.formGroup}>
                         <label htmlFor="customerName" className={styles.formLabel}>
-                          Cliente (opcional)
+                          Cliente <span className={styles.labelOptionalCaja}>(Opcional)</span>
                         </label>
                         <input
                           id="customerName"
@@ -1119,7 +1230,10 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                                     alt="QR Yape"
                                     width={180}
                                     height={180}
+                                    quality={75}
+                                    sizes="180px"
                                     className={styles.paymentQr}
+                                    loading="lazy"
                                   />
                                   <div className={styles.paymentInfoText}>
                                     <div className={styles.paymentLabel}>Titular</div>
@@ -1174,7 +1288,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                         onClick={() => handleCheckout(false)}
                         className={styles.btnCheckout}
                       >
-                        {loading ? 'Procesando...' : '💳 Finalizar Compra'}
+                        {loading ? 'Procesando...' : `💰 COBRAR ${formatMoneyPEN(total)}`}
                       </Button>
                     </div>
                   </div>
@@ -1217,7 +1331,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
             <div className={styles.modalBody}>
               {(() => {
                 const item = cart[priceAdjustModal.itemIndex]
-                const originalPrice = item.presentation?.computedUnitPrice || 0
+                const originalPrice = getUnitPrice(item)
                 let previewPrice = originalPrice
 
                 if (priceAdjustModal.mode === 'DESCUENTO_PORCENTAJE') {
@@ -1352,6 +1466,147 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       )}
       
       <BottomNav userRole={user.role} isCartOpen={cartOpen} />
+
+      {/* Modal de descuento global a la venta */}
+      {globalDiscountModal.show && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modal}>
+            <div className={styles.modalHeader}>
+              <h2>🏷️ Descuento a la Venta</h2>
+              <button
+                className={styles.modalClose}
+                onClick={() =>
+                  setGlobalDiscountModal({ show: false, mode: 'PORCENTAJE', value: 0, reason: '' })
+                }
+              >
+                ×
+              </button>
+            </div>
+
+            <div className={styles.modalBody}>
+              {(() => {
+                let previewDiscount = 0
+                if (globalDiscountModal.mode === 'PORCENTAJE') {
+                  previewDiscount = roundToDecimals(subtotal * (globalDiscountModal.value / 100), 2)
+                } else {
+                  previewDiscount = Math.min(globalDiscountModal.value, subtotal)
+                }
+                const previewTotal = subtotal - previewDiscount
+
+                return (
+                  <>
+                    <div className={styles.formGroup}>
+                      <label className={styles.label}>Tipo de descuento</label>
+                      <select
+                        value={globalDiscountModal.mode}
+                        onChange={(e) =>
+                          setGlobalDiscountModal({
+                            ...globalDiscountModal,
+                            mode: e.target.value as 'PORCENTAJE' | 'MONTO_FIJO',
+                            value: 0
+                          })
+                        }
+                        className={styles.select}
+                      >
+                        <option value="PORCENTAJE">Descuento Porcentual (%)</option>
+                        <option value="MONTO_FIJO">Descuento Fijo (Monto Exacto)</option>
+                      </select>
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <label className={styles.label}>
+                        {globalDiscountModal.mode === 'PORCENTAJE'
+                          ? 'Porcentaje de descuento (%)'
+                          : 'Monto a descontar (S/)'}
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max={globalDiscountModal.mode === 'PORCENTAJE' ? '100' : undefined}
+                        step="0.01"
+                        value={globalDiscountModal.value || ''}
+                        onChange={(e) =>
+                          setGlobalDiscountModal({
+                            ...globalDiscountModal,
+                            value: parseFloat(e.target.value) || 0
+                          })
+                        }
+                        className={styles.input}
+                        placeholder={
+                          globalDiscountModal.mode === 'PORCENTAJE'
+                            ? 'Ej: 10'
+                            : 'Ej: 5.00'
+                        }
+                      />
+                    </div>
+
+                    <div className={styles.formGroup}>
+                      <label className={styles.label}>Motivo de la bonificación *</label>
+                      <textarea
+                        value={globalDiscountModal.reason}
+                        onChange={(e) =>
+                          setGlobalDiscountModal({
+                            ...globalDiscountModal,
+                            reason: e.target.value
+                          })
+                        }
+                        className={styles.textarea}
+                        placeholder="Ej: Cliente frecuente, compra al por mayor, promoción del día..."
+                        rows={3}
+                        required
+                      />
+                    </div>
+
+                    <div className={styles.pricePreview}>
+                      <div className={styles.previewRow}>
+                        <span>Subtotal actual:</span>
+                        <span>{formatMoneyPEN(subtotal)}</span>
+                      </div>
+                      <div className={styles.previewRow}>
+                        <span>Descuento:</span>
+                        <span className={styles.discountPreviewValue}>
+                          - {formatMoneyPEN(previewDiscount)}
+                        </span>
+                      </div>
+                      <div className={styles.previewRow}>
+                        <span>Total resultante:</span>
+                        <span
+                          className={
+                            previewTotal > 0
+                              ? styles.finalPriceText
+                              : styles.invalidPriceText
+                          }
+                        >
+                          {formatMoneyPEN(previewTotal)}
+                        </span>
+                      </div>
+                      {previewTotal <= 0 && (
+                        <p className={styles.errorText}>
+                          ⚠️ El total resultante debe ser mayor a 0
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
+            </div>
+
+            <div className={styles.modalFooter}>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  setGlobalDiscountModal({ show: false, mode: 'PORCENTAJE', value: 0, reason: '' })
+                }
+              >
+                Cancelar
+              </Button>
+              <Button variant="primary" onClick={applyGlobalDiscount}>
+                Aplicar Bonificación
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

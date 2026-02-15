@@ -99,6 +99,7 @@
 
 .searchSection {
   margin-bottom: var(--space-6);
+  width: 100%;
 }
 
 .searchWrapper {
@@ -184,6 +185,13 @@
   margin: var(--space-3) 0;
   color: var(--text-secondary);
   font-weight: var(--font-medium);
+  transition: opacity var(--transition-fast);
+}
+
+/* UX anti-parpadeo: datos previos visibles con opacidad reducida mientras llegan nuevos */
+.resultsStale {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .loadMoreSmall {
@@ -362,8 +370,9 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   font-weight: var(--font-semibold);
-  font-size: var(--font-xs);
+  font-size: var(--font-sku, var(--font-xs));
   font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .nameCell {
@@ -393,7 +402,9 @@
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   font-family: 'Courier New', monospace;
-  font-size: var(--font-sm);
+  font-size: var(--font-sku, var(--font-sm));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .stockCell {
@@ -419,7 +430,9 @@
 
 /* Badge Styles */
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   font-size: var(--font-xs);
@@ -427,6 +440,14 @@
   text-align: center;
   white-space: nowrap;
   letter-spacing: 0.025em;
+}
+
+.stockDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .badgeSuccess {
@@ -496,6 +517,7 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: var(--space-5);
+  padding-bottom: 10rem; /* Space so last product isn't hidden behind fixed bottom nav */
 }
 
 @media (min-width: 640px) {
@@ -547,14 +569,15 @@
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-md);
   font-weight: var(--font-bold);
-  font-size: var(--font-sm);
+  font-size: var(--font-sku, var(--font-sm));
   font-family: 'Courier New', monospace;
   margin-bottom: var(--space-3);
   letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .cardName {
-  font-size: var(--font-xl);
+  font-size: var(--font-name-card, var(--font-xl));
   font-weight: var(--font-bold);
   color: var(--text);
   margin: 0;
@@ -597,7 +620,9 @@
 .cardDetailValue.price {
   color: var(--primary);
   font-family: 'Courier New', monospace;
-  font-size: var(--font-xl);
+  font-size: var(--font-price, var(--font-xl));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .cardDetailValue.warning {
@@ -885,6 +910,40 @@
   margin-left: var(--space-1);
 }
 
+/* Explicit labels for required/optional fields */
+.labelRequired {
+  font-weight: var(--font-normal);
+  font-size: 0.75em;
+  color: var(--text-muted);
+  margin-left: var(--space-1);
+}
+
+.labelOptional {
+  font-weight: var(--font-normal);
+  font-size: 0.75em;
+  color: var(--text-muted);
+  margin-left: var(--space-1);
+}
+
+/* Readonly input (auto-generated fields like SKU) */
+.inputReadonly {
+  background: var(--bg-alt) !important;
+  color: var(--text-muted) !important;
+  cursor: not-allowed;
+  opacity: 0.75;
+  border-style: dashed;
+}
+
+/* Helper text under fields */
+.fieldHint {
+  display: block;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-2);
+  font-style: italic;
+  padding-left: var(--space-1);
+}
+
 /* Form Inputs */
 .formInput,
 .formSelect,
@@ -913,7 +972,8 @@
 .formTextarea:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1), var(--shadow);
+  border-width: 3px;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15), var(--shadow);
   background: var(--card);
 }
 

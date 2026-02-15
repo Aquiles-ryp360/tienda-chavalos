@@ -116,6 +116,8 @@ export function PagosView({ user }: PagosViewProps) {
                 alt="QR Yape Ferretería Chavalos"
                 width={260}
                 height={260}
+                quality={75}
+                sizes="(max-width: 768px) 220px, 260px"
                 className={styles.qrImage}
                 priority
               />
@@ -195,6 +197,8 @@ export function PagosView({ user }: PagosViewProps) {
               alt="QR Yape Ferretería Chavalos ampliado"
               width={700}
               height={700}
+              quality={75}
+              sizes="(max-width: 768px) 90vw, 700px"
               className={styles.qrModalImage}
               priority
             />

@@ -201,10 +201,12 @@
 }
 
 .saleTotalValue {
-  font-size: var(--font-xl);
+  font-size: var(--font-price, var(--font-xl));
   font-weight: var(--font-extrabold);
   color: var(--primary);
   font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 /* Modal - Mobile First */
@@ -437,6 +439,7 @@
   font-weight: var(--font-semibold);
   color: var(--text);
   font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .grandTotal {

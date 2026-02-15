@@ -21,9 +21,12 @@ export async function createSession(user: SessionUser): Promise<void> {
   // En producción usar encrypt + sign, aquí simplificado con base64
   const sessionToken = Buffer.from(sessionData).toString('base64')
   
+  // secure: false — la app corre en HTTP sobre LAN, no HTTPS.
+  // Si en el futuro se agrega HTTPS (ej. reverse proxy), cambiar a:
+  //   secure: process.env.FORCE_HTTPS === 'true'
   cookieStore.set(SESSION_COOKIE_NAME, sessionToken, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: false,
     sameSite: 'lax',
     maxAge: 60 * 60 * 8, // 8 horas
     path: '/',

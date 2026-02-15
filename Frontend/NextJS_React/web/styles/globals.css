@@ -19,6 +19,16 @@
   --danger-light: #fee2e2;
   --info: #06b6d4;
   --info-light: #cffafe;
+
+  /* Stock Status Colors */
+  --stock-available: #10B981;
+  --stock-reorder: #F59E0B;
+  --stock-out: #EF4444;
+
+  /* Accessibility — Increased font scale (+15%) */
+  --font-price: 1.15rem;       /* ~18.4px — prices */
+  --font-name-card: 1.05rem;   /* ~16.8px — product names in cards */
+  --font-sku: 0.86rem;         /* ~13.8px — SKU codes */
   
   /* Colors - Neutrals */
   --bg: #f8fafc;
@@ -194,7 +204,8 @@ textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-width: 3px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
 }
 
 input:disabled,
