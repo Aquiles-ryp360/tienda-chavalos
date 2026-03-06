@@ -162,6 +162,17 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const [shareMethod, setShareMethod] = useState<PaymentMethodUi>('EFECTIVO')
   const [shareLoading, setShareLoading] = useState(false)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
+  // Flujo móvil de cobro en 2 pasos para optimizar espacio visual.
+  const [cartStep, setCartStep] = useState<'list' | 'payment'>('list')
+  // Parche de hidratación: evita render condicional dependiente de APIs del navegador en SSR.
+  const [dynamicPadding, setDynamicPadding] = useState(0)
+  const [isMounted, setIsMounted] = useState(false)
+  const floatingCartBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // Marca el montaje en cliente para habilitar mediciones de DOM sin mismatch SSR/CSR.
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
 
   // Bloquear scroll del body cuando el carrito está abierto
   useEffect(() => {
@@ -174,6 +185,50 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       document.body.style.overflow = ''
     }
   }, [cartOpen])
+
+  // Resetear paso del carrito al cerrarse o vaciarse
+  useEffect(() => {
+    if (!cartOpen || cart.length === 0) {
+      setCartStep('list')
+    }
+  }, [cartOpen, cart.length])
+
+  useEffect(() => {
+    if (!isMounted) return
+
+    // Calcula espacio inferior real para que el scroll no quede tapado por BottomNav + botón flotante.
+    const calculateDynamicPadding = () => {
+      const isDesktop = window.matchMedia('(min-width: 1024px)').matches
+      if (isDesktop) {
+        setDynamicPadding(16)
+        return
+      }
+
+      const floatingCartEl =
+        floatingCartBtnRef.current ??
+        document.querySelector<HTMLButtonElement>('button[class*="floatingCartBtn"]')
+
+      const bottomNavEl =
+        document.querySelector<HTMLElement>('nav[class*="bottomNav"]')
+
+      const floatingCartHeight = floatingCartEl?.getBoundingClientRect().height ?? 0
+      const bottomNavHeight = bottomNavEl?.getBoundingClientRect().height ?? 0
+      const breathingSpace = 60
+
+      setDynamicPadding(Math.ceil(floatingCartHeight + bottomNavHeight + breathingSpace))
+    }
+
+    const handleResize = () => {
+      window.requestAnimationFrame(calculateDynamicPadding)
+    }
+
+    handleResize()
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [isMounted, cartOpen])
   
   // Estado para modal de ajuste de precio
   const [priceAdjustModal, setPriceAdjustModal] = useState<{
@@ -226,7 +281,12 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
           setCart(parsed)
         }
       }
-      if (storedPayment === 'EFECTIVO' || storedPayment === 'YAPE' || storedPayment === 'TRANSFERENCIA') {
+      if (
+        storedPayment === 'EFECTIVO' ||
+        storedPayment === 'YAPE' ||
+        storedPayment === 'TRANSFERENCIA' ||
+        storedPayment === 'TARJETA'
+      ) {
         setPaymentMethod(storedPayment)
       }
     } catch (error) {
@@ -567,6 +627,16 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   }, [globalDiscount, subtotal])
 
   const total = subtotal + tax - globalDiscountAmount
+  const floatingCartCount = cart.length
+  const floatingCartProductsLabel = floatingCartCount === 1 ? 'producto' : 'productos'
+  const floatingCartAriaLabel = `Abrir carrito con ${floatingCartCount} ${floatingCartProductsLabel}`
+  const floatingCartTotalText = formatMoneyPEN(total)
+  const floatingCartBtnClassName = [
+    styles.floatingCartBtn,
+    cartOpen ? styles.floatingCartBtnHidden : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   const openGlobalDiscountModal = () => {
     setGlobalDiscountModal({
@@ -670,13 +740,14 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     try {
       const res = await fetch('/api/sales', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customerName: customerName || undefined,
           paymentMethod:
-            paymentMethod === 'TRANSFERENCIA'
+            paymentMethod === 'TRANSFERENCIA' || paymentMethod === 'TARJETA'
               ? 'TRANSFERENCIA'
-              : 'EFECTIVO', // backend enum no soporta YAPE; se envía como EFECTIVO
+              : 'EFECTIVO', // backend enum no soporta YAPE/TARJETA; se normaliza
           items: cart.map((item) => ({
             productId: item.product.id,
             presentationId: item.presentationId,
@@ -690,6 +761,13 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       })
 
       const data = await res.json()
+
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
 
       if (!res.ok) {
         // Manejar error de stock insuficiente
@@ -707,6 +785,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       setCustomerName('')
       setInsufficientStockError(null)
       setOverrideNote('')
+      setCartStep('list')
       setGlobalDiscount({ active: false, mode: 'PORCENTAJE', value: 0, reason: '' })
       refresh()
     } catch (error) {
@@ -716,6 +795,171 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       setLoading(false)
     }
   }
+
+  const renderGlobalDiscountActions = () => {
+    if (user.role !== 'ADMIN') return null
+
+    return (
+      <div className={styles.globalDiscountActions}>
+        {!globalDiscount.active ? (
+          <button
+            type="button"
+            className={styles.btnGlobalDiscount}
+            onClick={openGlobalDiscountModal}
+          >
+            🏷️ Aplicar Descuento a la Venta
+          </button>
+        ) : (
+          <div className={styles.globalDiscountActive}>
+            <span className={styles.globalDiscountNote} title={globalDiscount.reason}>
+              📝 {globalDiscount.reason}
+            </span>
+            <div className={styles.globalDiscountBtns}>
+              <button
+                type="button"
+                className={styles.btnEditDiscount}
+                onClick={openGlobalDiscountModal}
+              >
+                ✏️ Editar
+              </button>
+              <button
+                type="button"
+                className={styles.btnRemoveDiscount}
+                onClick={removeGlobalDiscount}
+              >
+                ✕ Quitar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderCheckoutForm = (customerInputId: string) => (
+    <div className={styles.checkoutFormSection}>
+      <div className={styles.formGroup}>
+        <label htmlFor={customerInputId} className={styles.formLabel}>
+          Cliente <span className={styles.labelOptionalCaja}>(Opcional)</span>
+        </label>
+        <input
+          id={customerInputId}
+          type="text"
+          value={customerName}
+          onChange={(e) => setCustomerName(e.target.value)}
+          className={styles.formInput}
+          placeholder="Nombre del cliente"
+        />
+      </div>
+
+      <div className={styles.formGroup}>
+        <label className={styles.formLabel}>Método de pago</label>
+        <div className={styles.paymentMethodGrid}>
+          <button
+            type="button"
+            className={`${styles.paymentMethodBtn} ${paymentMethod === 'EFECTIVO' ? styles.active : ''}`}
+            onClick={() => setPaymentMethod('EFECTIVO')}
+          >
+            💵 Efectivo
+          </button>
+          <button
+            type="button"
+            className={`${styles.paymentMethodBtn} ${paymentMethod === 'YAPE' ? styles.active : ''}`}
+            onClick={() => setPaymentMethod('YAPE')}
+          >
+            📱 Yape
+          </button>
+          <button
+            type="button"
+            className={`${styles.paymentMethodBtn} ${paymentMethod === 'TRANSFERENCIA' ? styles.active : ''}`}
+            onClick={() => setPaymentMethod('TRANSFERENCIA')}
+          >
+            🏦 Transfer.
+          </button>
+          <button
+            type="button"
+            className={`${styles.paymentMethodBtn} ${paymentMethod === 'TARJETA' ? styles.active : ''}`}
+            onClick={() => setPaymentMethod('TARJETA')}
+          >
+            💳 Tarjeta
+          </button>
+        </div>
+
+        {(paymentMethod === 'YAPE' || paymentMethod === 'TRANSFERENCIA') && (
+          <div className={styles.paymentInfoCard}>
+            <div className={styles.paymentInfoHeader}>
+              {paymentMethod === 'YAPE' ? 'Paga con Yape' : 'Transferencia BCP'}
+            </div>
+            {paymentMethod === 'YAPE' && (
+              <div className={styles.paymentInfoContent}>
+                <div className={styles.paymentInfoRow}>
+                  <Image
+                    src={PAYMENT_INFO.yapeQrPath}
+                    alt="QR Yape"
+                    width={180}
+                    height={180}
+                    quality={75}
+                    sizes="180px"
+                    className={styles.paymentQr}
+                    loading="lazy"
+                  />
+                  <div className={styles.paymentInfoText}>
+                    <div className={styles.paymentLabel}>Titular</div>
+                    <div className={styles.paymentValue}>{PAYMENT_INFO.holder}</div>
+                    <div className={styles.paymentNote}>Escanea el QR para pagar con Yape.</div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {paymentMethod === 'TRANSFERENCIA' && (
+              <div className={styles.paymentInfoContent}>
+                <div className={styles.paymentInfoRow}>
+                  <div className={styles.paymentInfoText}>
+                    <div className={styles.paymentLabel}>Cuenta BCP (S/)</div>
+                    <div className={styles.paymentValue}>{PAYMENT_INFO.accountBcp}</div>
+                  </div>
+                </div>
+                <div className={styles.paymentInfoRow}>
+                  <div className={styles.paymentInfoText}>
+                    <div className={styles.paymentLabel}>CCI</div>
+                    <div className={styles.paymentValue}>{PAYMENT_INFO.cci}</div>
+                  </div>
+                </div>
+                <div className={styles.paymentNote}>Confirma el monto antes de transferir.</div>
+              </div>
+            )}
+            <div className={styles.paymentActions}>
+              <button
+                type="button"
+                className={styles.paymentPrimaryBtn}
+                onClick={() => handleSharePayment(paymentMethod)}
+              >
+                📤 Compartir por WhatsApp
+              </button>
+              <button
+                type="button"
+                className={styles.paymentSecondaryBtn}
+                onClick={() => handleCopyPayment(paymentMethod)}
+              >
+                📋 Copiar datos
+              </button>
+              {copyStatus === 'copied' && <span className={styles.copyOk}>Copiado</span>}
+              {copyStatus === 'error' && <span className={styles.copyError}>No se pudo copiar</span>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Button
+        variant="success"
+        disabled={loading || cart.length === 0}
+        onClick={() => handleCheckout(false)}
+        className={styles.btnCheckout}
+      >
+        {loading ? 'Procesando...' : `COBRAR ${formatMoneyPEN(total)}`}
+      </Button>
+    </div>
+  )
 
   return (
     <>
@@ -802,7 +1046,10 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
               />
             </div>
 
-            <div className={styles.productsGrid}>
+            <div
+              className={styles.productsGrid}
+              style={isMounted ? { paddingBottom: `${dynamicPadding}px` } : undefined}
+            >
               {products.length === 0 && search && (
                 <div className={styles.noResults}>No se encontraron productos</div>
               )}
@@ -829,18 +1076,34 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
             </div>
           </div>
 
-          {/* Botón flotante para abrir carrito en móvil */}
-          <button 
-            className={styles.floatingCartBtn}
-            onClick={() => setCartOpen(true)}
-          >
-            <span className={styles.floatingCartIcon}>🛒</span>
-            <span className={styles.floatingCartBadge}>{cart.length}</span>
-          </button>
+          {/* Carrito flotante para abrir panel en móvil */}
+          {isMounted ? (
+            <button
+              ref={floatingCartBtnRef}
+              className={floatingCartBtnClassName}
+              onClick={() => {
+                setCartStep('list')
+                setCartOpen(true)
+              }}
+              aria-label={floatingCartAriaLabel}
+            >
+              <span className={styles.floatingCartIconWrap}>
+                <span className={styles.floatingCartIcon}>🛒</span>
+                <span className={styles.floatingCartBadge}>{floatingCartCount}</span>
+              </span>
+              <span className={styles.floatingCartInfo}>
+                <span className={styles.floatingCartItems}>
+                  {floatingCartCount} {floatingCartProductsLabel}
+                </span>
+                <span className={styles.floatingCartTotal}>{floatingCartTotalText}</span>
+              </span>
+              <span className={styles.floatingCartAction}>Ver carrito</span>
+            </button>
+          ) : null}
 
           {/* Cart Wrapper - Bottom Sheet en móvil, normal en desktop */}
           <div className={`${styles.cartWrapper} ${cartOpen ? styles.open : ''}`} onClick={() => setCartOpen(false)}>
-            <div className={styles.cartSection} onClick={(e) => e.stopPropagation()}>
+            <div className={`${styles.cartSection} ${cartStep === 'payment' ? styles.cartPaymentActive : ''}`} onClick={(e) => e.stopPropagation()}>
               
               {/* Header sticky con drag handle visual */}
               <div className={styles.cartHeader}>
@@ -871,239 +1134,266 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                 </div>
               ) : (
                 <>
-                  {/* Body scrolleable - SOLO productos */}
-                  <div className={styles.cartBody}>
-                    <div className={styles.cartItemsList}>
-                      {cart.map((item, idx) => {
-                        const effectivePresentation = getEffectivePresentation(item)
-                        const unitPrice = getUnitPrice(item)
-                        const originalUnitPrice = effectivePresentation?.computedUnitPrice ||
-                          item.presentation?.computedUnitPrice ||
-                          item.product.presentations?.find(p => p.isDefault)?.computedUnitPrice ||
-                          item.product.price || 0
-                        const unit = getEffectiveUnit(item)
-                        const isDecimal = unitAllowsDecimals(unit)
-                        const subtotalItem = roundToDecimals(unitPrice * item.soldQty, 2)
+                  {/* Paso 1: listado compacto de productos */}
+                  <div className={styles.cartMobileListView}>
+                    {/* Body scrolleable - SOLO productos */}
+                    <div className={styles.cartBody}>
+                      <div className={styles.cartItemsList}>
+                        {cart.map((item, idx) => {
+                          const effectivePresentation = getEffectivePresentation(item)
+                          const unitPrice = getUnitPrice(item)
+                          const originalUnitPrice = effectivePresentation?.computedUnitPrice ||
+                            item.presentation?.computedUnitPrice ||
+                            item.product.presentations?.find(p => p.isDefault)?.computedUnitPrice ||
+                            item.product.price || 0
+                          const unit = getEffectiveUnit(item)
+                          const isDecimal = unitAllowsDecimals(unit)
+                          const subtotalItem = roundToDecimals(unitPrice * item.soldQty, 2)
 
-                        const selectedPresentationId =
-                          item.presentationId ||
-                          item.product.presentations?.find((p) => p.isDefault)?.id ||
-                          item.product.presentations?.[0]?.id ||
-                          ''
+                          const selectedPresentationId =
+                            item.presentationId ||
+                            item.product.presentations?.find((p) => p.isDefault)?.id ||
+                            item.product.presentations?.[0]?.id ||
+                            ''
 
-                        return (
-                          <div key={`${item.product.id}-${item.presentationId}-${idx}`} className={styles.cartItem}>
-                            
-                            {/* #num */}
-                            <span className={styles.cartItemNumber}>#{idx + 1}</span>
-
-                            {/* Name [UNIT] [badge] */}
-                            <div className={styles.cartItemHeader}>
-                              <div className={styles.cartItemName}>
-                                {item.product.name}
-                                {item.presentation && item.presentation.name.toUpperCase() !== unit.toUpperCase() && (
-                                  <span className={styles.cartItemPresentation}> · {item.presentation.name}</span>
-                                )}
-                              </div>
-                              <span className={styles.unitBadge}>{unit}</span>
-                              {item.priceAdjusted && (
-                                <span className={styles.badgeAdjusted} title={item.priceAdjustNote}>🏷️</span>
-                              )}
-                            </div>
-
-                            {/* [- qty +] */}
-                            <div className={styles.quantityControls}>
-                              <button
-                                className={styles.quantityBtn}
-                                onClick={() => {
-                                  const allowsDecimals = determineAllowsDecimals(unit)
-                                  const step = determineStep(unit, allowsDecimals)
-                                  const min = allowsDecimals ? 0.001 : 1
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
-                                  const newQty = Math.max(min, currentQty - step)
-                                  const normalized = normalizeQty(newQty, { step, min })
-                                  if (normalized && normalized >= min) {
-                                    setCart(
-                                      cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) {
-                                          return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
-                                        }
-                                        return cartItem
-                                      })
-                                    )
-                                  }
-                                }}
-                                aria-label="Disminuir cantidad"
-                              >−</button>
-                              <div className={styles.quantityDisplay}>
-                                <input
-                                  type="text"
-                                  inputMode={isDecimal ? 'decimal' : 'numeric'}
-                                  value={item.draftQty !== undefined ? item.draftQty : item.soldQty}
-                                  onChange={(e) => {
-                                    let value = e.target.value
-                                    value = value.replace(',', '.')
-                                    if (value === '' || /^\d*\.?\d*$/.test(value)) {
-                                      setCart(
-                                        cart.map((cartItem, cartIdx) => {
-                                          if (cartIdx === idx) {
-                                            return { ...cartItem, draftQty: value }
-                                          }
-                                          return cartItem
-                                        })
-                                      )
-                                    }
-                                  }}
-                                  onBlur={() => {
-                                    const allowsDecimals = determineAllowsDecimals(unit)
-                                    const step = determineStep(unit, allowsDecimals)
-                                    const min = allowsDecimals ? 0.001 : 1
-                                    const currentDraft = item.draftQty
-                                    if (!currentDraft || currentDraft.trim() === '') {
-                                      setCart(cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) return { ...cartItem, draftQty: String(item.soldQty) }
-                                        return cartItem
-                                      }))
-                                      return
-                                    }
-                                    const normalized = normalizeQty(currentDraft, { step, min, allowAnyDecimal: true })
-                                    if (normalized && normalized >= min) {
-                                      setCart(cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
-                                        return cartItem
-                                      }))
-                                    } else {
-                                      setCart(cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) return { ...cartItem, soldQty: min, draftQty: String(min) }
-                                        return cartItem
-                                      }))
-                                    }
-                                  }}
-                                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                                  className={styles.quantityInput}
-                                  aria-label="Cantidad"
-                                />
-                                <span className={styles.quantityUnit}>{unit}</span>
-                              </div>
-                              <button
-                                className={styles.quantityBtn}
-                                onClick={() => {
-                                  const allowsDecimals = determineAllowsDecimals(unit)
-                                  const step = determineStep(unit, allowsDecimals)
-                                  const min = allowsDecimals ? 0.001 : 1
-                                  const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
-                                  const newQty = currentQty + step
-                                  const normalized = normalizeQty(newQty, { step, min })
-                                  if (normalized) {
-                                    setCart(
-                                      cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) {
-                                          return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
-                                        }
-                                        return cartItem
-                                      })
-                                    )
-                                  }
-                                }}
-                                aria-label="Aumentar cantidad"
-                              >+</button>
-                            </div>
-
-                            {/* Presentation selector if multiple */}
-                            {item.product.presentations && item.product.presentations.length > 1 && (
-                              <div className={styles.presentationSelector}>
-                                <select
-                                  value={selectedPresentationId}
-                                  onChange={(e) => {
-                                    const newPresentationId = e.target.value
-                                    const newPresentation =
-                                      item.product.presentations?.find((p) => p.id === newPresentationId) || null
-                                    const newUnit = newPresentation?.unit || item.product.unit
-                                    const allowsDecimals = determineAllowsDecimals(newUnit)
-                                    const step = determineStep(newUnit, allowsDecimals)
-                                    const min = allowsDecimals ? 0.001 : 1
-                                    const normalized = normalizeQty(item.soldQty, { step, min, allowAnyDecimal: true }) || min
-                                    setCart(
-                                      cart.map((cartItem, cartIdx) => {
-                                        if (cartIdx === idx) {
-                                          return {
-                                            ...cartItem,
-                                            presentationId: newPresentationId || null,
-                                            presentation: newPresentation,
-                                            soldQty: normalized,
-                                            draftQty: String(normalized),
-                                            unitType: newUnit,
-                                            presentationUnit: newPresentation?.unit || undefined,
-                                          }
-                                        }
-                                        return cartItem
-                                      })
-                                    )
-                                  }}
-                                  className={styles.presentationSelect}
-                                >
-                                  {item.product.presentations.map((pres) => (
-                                    <option key={pres.id} value={pres.id}>
-                                      {pres.name} {pres.factorToBase > 1 ? `(${pres.factorToBase} ${pres.unit})` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            )}
-
-                            {/* Pricing */}
-                            <div className={styles.cartItemPricing}>
-                              <div className={styles.priceInfo}>
-                                {item.priceAdjusted && (
-                                  <div className={styles.priceOriginal}>
-                                    {formatMoneyPEN(originalUnitPrice)}
+                          return (
+                            <div key={`${item.product.id}-${item.presentationId}-${idx}`} className={styles.cartItem}>
+                              <div className={styles.cartItemTop}>
+                                <div className={styles.cartItemHeader}>
+                                  <div className={styles.cartItemName}>
+                                    {item.product.name}
+                                    {item.presentation && item.presentation.name.toUpperCase() !== unit.toUpperCase() && (
+                                      <span className={styles.cartItemPresentation}> · {item.presentation.name}</span>
+                                    )}
                                   </div>
-                                )}
-                                <div className={styles.priceUnit}>
-                                  {formatMoneyPEN(unitPrice)}/{unit}
+                                </div>
+                                <button
+                                  className={styles.cartItemRemove}
+                                  onClick={() => removeFromCart(item.product.id, item.presentationId)}
+                                  aria-label="Eliminar producto"
+                                  title="Eliminar"
+                                >
+                                  🗑
+                                </button>
+                              </div>
+
+                              <div className={styles.cartItemMainRow}>
+                                <div className={styles.cartItemControls}>
+                                  <div className={styles.quantityControls}>
+                                    <button
+                                      className={styles.quantityBtn}
+                                      onClick={() => {
+                                        const allowsDecimals = determineAllowsDecimals(unit)
+                                        const step = determineStep(unit, allowsDecimals)
+                                        const min = allowsDecimals ? 0.001 : 1
+                                        const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
+                                        const newQty = Math.max(min, currentQty - step)
+                                        const normalized = normalizeQty(newQty, { step, min })
+                                        if (normalized && normalized >= min) {
+                                          setCart(
+                                            cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) {
+                                                return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                              }
+                                              return cartItem
+                                            })
+                                          )
+                                        }
+                                      }}
+                                      aria-label="Disminuir cantidad"
+                                    >−</button>
+                                    <div className={styles.quantityDisplay}>
+                                      <input
+                                        type="text"
+                                        inputMode={isDecimal ? 'decimal' : 'numeric'}
+                                        value={item.draftQty !== undefined ? item.draftQty : item.soldQty}
+                                        onChange={(e) => {
+                                          let value = e.target.value
+                                          value = value.replace(',', '.')
+                                          if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                                            setCart(
+                                              cart.map((cartItem, cartIdx) => {
+                                                if (cartIdx === idx) {
+                                                  return { ...cartItem, draftQty: value }
+                                                }
+                                                return cartItem
+                                              })
+                                            )
+                                          }
+                                        }}
+                                        onBlur={() => {
+                                          const allowsDecimals = determineAllowsDecimals(unit)
+                                          const step = determineStep(unit, allowsDecimals)
+                                          const min = allowsDecimals ? 0.001 : 1
+                                          const currentDraft = item.draftQty
+                                          if (!currentDraft || currentDraft.trim() === '') {
+                                            setCart(cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) return { ...cartItem, draftQty: String(item.soldQty) }
+                                              return cartItem
+                                            }))
+                                            return
+                                          }
+                                          const normalized = normalizeQty(currentDraft, { step, min, allowAnyDecimal: true })
+                                          if (normalized && normalized >= min) {
+                                            setCart(cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                              return cartItem
+                                            }))
+                                          } else {
+                                            setCart(cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) return { ...cartItem, soldQty: min, draftQty: String(min) }
+                                              return cartItem
+                                            }))
+                                          }
+                                        }}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                                        className={styles.quantityInput}
+                                        aria-label="Cantidad"
+                                      />
+                                      <span className={styles.quantityUnit}>{unit}</span>
+                                    </div>
+                                    <button
+                                      className={styles.quantityBtn}
+                                      onClick={() => {
+                                        const allowsDecimals = determineAllowsDecimals(unit)
+                                        const step = determineStep(unit, allowsDecimals)
+                                        const min = allowsDecimals ? 0.001 : 1
+                                        const currentQty = normalizeQty(item.draftQty || item.soldQty, { step, min, allowAnyDecimal: true }) || item.soldQty
+                                        const newQty = currentQty + step
+                                        const normalized = normalizeQty(newQty, { step, min })
+                                        if (normalized) {
+                                          setCart(
+                                            cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) {
+                                                return { ...cartItem, soldQty: normalized, draftQty: String(normalized) }
+                                              }
+                                              return cartItem
+                                            })
+                                          )
+                                        }
+                                      }}
+                                      aria-label="Aumentar cantidad"
+                                    >+</button>
+                                  </div>
+
+                                  {item.product.presentations && item.product.presentations.length > 1 && (
+                                    <div className={styles.presentationSelector}>
+                                      <select
+                                        value={selectedPresentationId}
+                                        onChange={(e) => {
+                                          const newPresentationId = e.target.value
+                                          const newPresentation =
+                                            item.product.presentations?.find((p) => p.id === newPresentationId) || null
+                                          const newUnit = newPresentation?.unit || item.product.unit
+                                          const allowsDecimals = determineAllowsDecimals(newUnit)
+                                          const step = determineStep(newUnit, allowsDecimals)
+                                          const min = allowsDecimals ? 0.001 : 1
+                                          const normalized = normalizeQty(item.soldQty, { step, min, allowAnyDecimal: true }) || min
+                                          setCart(
+                                            cart.map((cartItem, cartIdx) => {
+                                              if (cartIdx === idx) {
+                                                return {
+                                                  ...cartItem,
+                                                  presentationId: newPresentationId || null,
+                                                  presentation: newPresentation,
+                                                  soldQty: normalized,
+                                                  draftQty: String(normalized),
+                                                  unitType: newUnit,
+                                                  presentationUnit: newPresentation?.unit || undefined,
+                                                }
+                                              }
+                                              return cartItem
+                                            })
+                                          )
+                                        }}
+                                        className={styles.presentationSelect}
+                                      >
+                                        {item.product.presentations.map((pres) => (
+                                          <option key={pres.id} value={pres.id}>
+                                            {pres.name} {pres.factorToBase > 1 ? `(${pres.factorToBase} ${pres.unit})` : ''}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className={styles.cartItemPricing}>
+                                  <span className={styles.priceSubtotal}>{formatMoneyPEN(subtotalItem)}</span>
+                                  <div className={styles.priceMetaLine}>
+                                    {item.priceAdjusted && (
+                                      <>
+                                        <span className={styles.badgeAdjusted} title={item.priceAdjustNote}>Desc.</span>
+                                        <span className={styles.priceOriginal}>{formatMoneyPEN(originalUnitPrice)}</span>
+                                      </>
+                                    )}
+                                    <span className={styles.priceUnit}>{formatMoneyPEN(unitPrice)}/{unit}</span>
+                                    {user.role === 'ADMIN' && (
+                                      <div className={styles.adminActions}>
+                                        {!item.priceAdjusted ? (
+                                          <button
+                                            className={styles.btnAdjustPrice}
+                                            onClick={() => openPriceAdjustModal(idx)}
+                                            title="Ajustar precio"
+                                          >💰</button>
+                                        ) : (
+                                          <button
+                                            className={styles.btnRemoveAdjust}
+                                            onClick={() => removePriceAdjust(idx)}
+                                            title="Quitar ajuste de precio"
+                                          >✕</button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
-                              <div className={styles.priceSubtotal}>
-                                {formatMoneyPEN(subtotalItem)}
-                              </div>
                             </div>
+                          )
+                        })}
+                      </div>
+                    </div>
 
-                            {/* Admin adjust price (only ADMIN) */}
-                            {user.role === 'ADMIN' && (
-                              <div className={styles.adminActions}>
-                                {!item.priceAdjusted ? (
-                                  <button
-                                    className={styles.btnAdjustPrice}
-                                    onClick={() => openPriceAdjustModal(idx)}
-                                    title="Ajustar precio"
-                                  >💰</button>
-                                ) : (
-                                  <button
-                                    className={styles.btnRemoveAdjust}
-                                    onClick={() => removePriceAdjust(idx)}
-                                    title="Quitar ajuste de precio"
-                                  >✕</button>
-                                )}
-                              </div>
-                            )}
-
-                            {/* ✕ Remove — always last, pushed to far right */}
-                            <button
-                              className={styles.cartItemRemove}
-                              onClick={() => removeFromCart(item.product.id, item.presentationId)}
-                              aria-label="Eliminar producto"
-                              title="Eliminar"
-                            >✕</button>
-
-                          </div>
-                        )
-                      })}
+                    <div className={styles.cartFooterMobile}>
+                      <div className={styles.mobileTotalRow}>
+                        <span className={styles.mobileTotalLabel}>Total a Pagar</span>
+                        <span className={styles.mobileTotalValue}>{formatMoneyPEN(total)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.btnGoToPay}
+                        onClick={() => setCartStep('payment')}
+                        disabled={loading || cart.length === 0}
+                      >
+                        Siguiente: Pagar
+                      </button>
                     </div>
                   </div>
 
-                  {/* Footer sticky - SIEMPRE visible */}
+                  {/* Paso 2: formulario y confirmación de pago */}
+                  <div className={styles.cartMobilePaymentView}>
+                    <div className={styles.cartPaymentHeaderMobile}>
+                      <button
+                        type="button"
+                        className={styles.btnBackToList}
+                        onClick={() => setCartStep('list')}
+                      >
+                        ← Volver atrás
+                      </button>
+                      <div className={styles.cartPaymentTotalMobile}>
+                        <span className={styles.mobileTotalLabel}>Total a Pagar</span>
+                        <span className={styles.mobileTotalValue}>{formatMoneyPEN(total)}</span>
+                      </div>
+                    </div>
+                    <div className={styles.cartPaymentBodyMobile}>
+                      {renderGlobalDiscountActions()}
+                      {renderCheckoutForm('customerNameMobile')}
+                    </div>
+                  </div>
+
+                  {/* Footer completo en desktop */}
                   <div className={styles.cartFooter}>
-                    
+
                     {/* Resumen de totales */}
                     <div className={styles.totalsSection}>
                       <div className={styles.totalRow}>
@@ -1130,42 +1420,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                         </div>
                       )}
 
-                      {/* Botón de descuento global (solo ADMIN) */}
-                      {user.role === 'ADMIN' && (
-                        <div className={styles.globalDiscountActions}>
-                          {!globalDiscount.active ? (
-                            <button
-                              type="button"
-                              className={styles.btnGlobalDiscount}
-                              onClick={openGlobalDiscountModal}
-                            >
-                              🏷️ Aplicar Descuento a la Venta
-                            </button>
-                          ) : (
-                            <div className={styles.globalDiscountActive}>
-                              <span className={styles.globalDiscountNote} title={globalDiscount.reason}>
-                                📝 {globalDiscount.reason}
-                              </span>
-                              <div className={styles.globalDiscountBtns}>
-                                <button
-                                  type="button"
-                                  className={styles.btnEditDiscount}
-                                  onClick={openGlobalDiscountModal}
-                                >
-                                  ✏️ Editar
-                                </button>
-                                <button
-                                  type="button"
-                                  className={styles.btnRemoveDiscount}
-                                  onClick={removeGlobalDiscount}
-                                >
-                                  ✕ Quitar
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      {renderGlobalDiscountActions()}
 
                       <div className={styles.totalRowFinal}>
                         <span className={styles.totalLabelFinal}>Total a Pagar</span>
@@ -1173,124 +1428,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                       </div>
                     </div>
 
-                    {/* Formulario de checkout */}
-                    <div className={styles.checkoutFormSection}>
-                      <div className={styles.formGroup}>
-                        <label htmlFor="customerName" className={styles.formLabel}>
-                          Cliente <span className={styles.labelOptionalCaja}>(Opcional)</span>
-                        </label>
-                        <input
-                          id="customerName"
-                          type="text"
-                          value={customerName}
-                          onChange={(e) => setCustomerName(e.target.value)}
-                          className={styles.formInput}
-                          placeholder="Nombre del cliente"
-                        />
-                      </div>
-
-                      <div className={styles.formGroup}>
-                        <label htmlFor="paymentMethod" className={styles.formLabel}>
-                          Método de pago
-                        </label>
-                        <div className={styles.paymentMethodGrid}>
-                          <button
-                            type="button"
-                            className={`${styles.paymentMethodBtn} ${paymentMethod === 'EFECTIVO' ? styles.active : ''}`}
-                            onClick={() => setPaymentMethod('EFECTIVO')}
-                          >
-                            💵 Efectivo
-                          </button>
-                          <button
-                            type="button"
-                            className={`${styles.paymentMethodBtn} ${paymentMethod === 'YAPE' ? styles.active : ''}`}
-                            onClick={() => setPaymentMethod('YAPE')}
-                          >
-                            📱 Yape
-                          </button>
-                          <button
-                            type="button"
-                            className={`${styles.paymentMethodBtn} ${paymentMethod === 'TRANSFERENCIA' ? styles.active : ''}`}
-                            onClick={() => setPaymentMethod('TRANSFERENCIA')}
-                          >
-                            🏦 Transfer.
-                          </button>
-                        </div>
-
-                        {(paymentMethod === 'YAPE' || paymentMethod === 'TRANSFERENCIA') && (
-                          <div className={styles.paymentInfoCard}>
-                            <div className={styles.paymentInfoHeader}>
-                              {paymentMethod === 'YAPE' ? 'Paga con Yape' : 'Transferencia BCP'}
-                            </div>
-                            {paymentMethod === 'YAPE' && (
-                              <div className={styles.paymentInfoContent}>
-                                <div className={styles.paymentInfoRow}>
-                                  <Image
-                                    src={PAYMENT_INFO.yapeQrPath}
-                                    alt="QR Yape"
-                                    width={180}
-                                    height={180}
-                                    quality={75}
-                                    sizes="180px"
-                                    className={styles.paymentQr}
-                                    loading="lazy"
-                                  />
-                                  <div className={styles.paymentInfoText}>
-                                    <div className={styles.paymentLabel}>Titular</div>
-                                    <div className={styles.paymentValue}>{PAYMENT_INFO.holder}</div>
-                                    <div className={styles.paymentNote}>Escanea el QR para pagar con Yape.</div>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                            {paymentMethod === 'TRANSFERENCIA' && (
-                              <div className={styles.paymentInfoContent}>
-                                <div className={styles.paymentInfoRow}>
-                                  <div className={styles.paymentInfoText}>
-                                    <div className={styles.paymentLabel}>Cuenta BCP (S/)</div>
-                                    <div className={styles.paymentValue}>{PAYMENT_INFO.accountBcp}</div>
-                                  </div>
-                                </div>
-                                <div className={styles.paymentInfoRow}>
-                                  <div className={styles.paymentInfoText}>
-                                    <div className={styles.paymentLabel}>CCI</div>
-                                    <div className={styles.paymentValue}>{PAYMENT_INFO.cci}</div>
-                                  </div>
-                                </div>
-                                <div className={styles.paymentNote}>Confirma el monto antes de transferir.</div>
-                              </div>
-                            )}
-                            <div className={styles.paymentActions}>
-                              <button
-                                type="button"
-                                className={styles.paymentPrimaryBtn}
-                                onClick={() => handleSharePayment(paymentMethod)}
-                              >
-                                📤 Compartir por WhatsApp
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.paymentSecondaryBtn}
-                                onClick={() => handleCopyPayment(paymentMethod)}
-                              >
-                                📋 Copiar datos
-                              </button>
-                              {copyStatus === 'copied' && <span className={styles.copyOk}>Copiado</span>}
-                              {copyStatus === 'error' && <span className={styles.copyError}>No se pudo copiar</span>}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <Button
-                        variant="success"
-                        disabled={loading || cart.length === 0}
-                        onClick={() => handleCheckout(false)}
-                        className={styles.btnCheckout}
-                      >
-                        {loading ? 'Procesando...' : `💰 COBRAR ${formatMoneyPEN(total)}`}
-                      </Button>
-                    </div>
+                    {renderCheckoutForm('customerNameDesktop')}
                   </div>
                 </>
               )}
@@ -1610,4 +1748,3 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     </>
   )
 }
-

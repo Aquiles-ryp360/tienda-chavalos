@@ -56,14 +56,14 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ nextSku })
   } catch (error: any) {
-    console.error('Error in GET /api/products/next-sku:', error)
-
     if (error.message === 'No autenticado') {
       return NextResponse.json(
         { error: 'No autenticado' },
         { status: 401 }
       )
     }
+
+    console.error('Error in GET /api/products/next-sku:', error)
 
     return NextResponse.json(
       { error: 'Error al obtener siguiente SKU' },

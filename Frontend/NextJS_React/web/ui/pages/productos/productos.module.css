@@ -258,29 +258,28 @@
 
 .successBanner {
   position: fixed;
-  top: var(--space-4);
+  top: var(--space-3);
   right: var(--space-4);
   left: var(--space-4);
-  background: var(--success-light);
-  border: 2px solid var(--success);
-  border-radius: var(--radius-md);
-  padding: var(--space-4) var(--space-5);
+  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+  border: 1px solid #34d399;
+  border-left: 5px solid #10b981;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
-  color: #065f46;
-  font-weight: var(--font-semibold);
-  font-size: var(--font-base);
+  color: #064e3b;
   z-index: 999;
-  box-shadow: var(--shadow-lg);
-  animation: slideDown 0.3s ease;
+  box-shadow: 0 12px 30px rgba(16, 185, 129, 0.2);
+  animation: slideDown 0.24s ease-out;
 }
 
 @media (min-width: 768px) {
   .successBanner {
     right: var(--space-6);
     left: auto;
-    max-width: 400px;
+    max-width: 360px;
   }
 }
 
@@ -296,9 +295,34 @@
 }
 
 .successBannerIcon {
+  width: 1.6rem;
+  height: 1.6rem;
+  min-width: 1.6rem;
+  border-radius: 999px;
+  background: #10b981;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-weight: var(--font-bold);
-  font-size: var(--font-xl);
+  font-size: 0.9rem;
   line-height: 1;
+}
+
+.successBannerContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.successBannerTitle {
+  font-size: var(--font-sm);
+  font-weight: var(--font-bold);
+}
+
+.successBannerText {
+  font-size: var(--font-xs);
+  color: #065f46;
 }
 
 /* ============================================
@@ -1196,6 +1220,32 @@
   background: rgba(255, 193, 7, 0.08);
   font-size: 13px;
   line-height: 1.25;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dupActionBtn {
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--primary);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.dupActionBtn:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.2);
+}
+
+.dupActionBtn:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .suggestHint {
@@ -1230,6 +1280,11 @@
   border: none;
   background: transparent;
   cursor: pointer;
+}
+
+.suggestItem:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .suggestItem:hover {

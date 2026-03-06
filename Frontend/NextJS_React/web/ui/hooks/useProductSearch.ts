@@ -70,8 +70,14 @@ async function searchFetcher(url: string): Promise<SearchResponse> {
     const res = await fetch(url, {
       signal: controller.signal,
       cache: 'no-store',
+      credentials: 'include',
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) {
+      if (res.status === 401 && typeof window !== 'undefined') {
+        window.location.href = '/login'
+      }
+      throw new Error(`HTTP ${res.status}`)
+    }
     const data = await res.json()
     return {
       products: data.products || data.items || [],

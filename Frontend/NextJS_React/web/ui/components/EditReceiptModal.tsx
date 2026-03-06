@@ -44,6 +44,7 @@ export function EditReceiptModal({
     try {
       const res = await fetch(`/api/sales/${saleId}`, {
         method: 'PATCH',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customerName: formData.customerName || null,
@@ -54,6 +55,12 @@ export function EditReceiptModal({
           observations: formData.observations || null,
         }),
       })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
 
       const data = await res.json()
 

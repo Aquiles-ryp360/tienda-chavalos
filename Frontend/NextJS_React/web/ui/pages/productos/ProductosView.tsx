@@ -71,7 +71,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [showModal, setShowModal] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
-  const [saveSuccess, setSaveSuccess] = useState(false)
+  const [createSuccessVisible, setCreateSuccessVisible] = useState(false)
   const [formData, setFormData] = useState<FormData>({
     sku: '',
     name: '',
@@ -91,6 +91,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
   const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
   const [nameCheckLoading, setNameCheckLoading] = useState(false)
+  const [editingSuggestionId, setEditingSuggestionId] = useState<string | null>(null)
 
   const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
 
@@ -110,7 +111,18 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     const t = setTimeout(async () => {
       setNameCheckLoading(true)
       try {
-        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`)
+        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`, {
+          credentials: 'include',
+        })
+        if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login'
+          }
+          return
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
         const data = await res.json()
         if (cancelled) return
 
@@ -142,11 +154,10 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   }, [showModal, formData.name, editingProduct?.id])
 
   useEffect(() => {
-    if (saveSuccess) {
-      const timer = setTimeout(() => setSaveSuccess(false), 4000)
-      return () => clearTimeout(timer)
-    }
-  }, [saveSuccess])
+    if (!createSuccessVisible) return
+    const timer = setTimeout(() => setCreateSuccessVisible(false), 3500)
+    return () => clearTimeout(timer)
+  }, [createSuccessVisible])
 
   // Handle ESC key to close modal
   useEffect(() => {
@@ -181,7 +192,18 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
       params.append('limit', '30')
       params.append('offset', String(skip))
 
-      const res = await fetch(`/api/products?${params}`)
+      const res = await fetch(`/api/products?${params}`, {
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       const items: Product[] = data.products || data.items || []
 
@@ -230,6 +252,59 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     setSkuTouched(true) // When editing, SKU is already set, so mark as touched
     setFormErrors({})
     setShowModal(true)
+  }
+
+  const handleEditFromSuggestion = async (suggestion: NameSuggestion) => {
+    setEditingSuggestionId(suggestion.id)
+    try {
+      const res = await fetch(`/api/products/${suggestion.id}`, {
+        cache: 'no-store',
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (!data?.id) {
+        throw new Error('Producto no encontrado')
+      }
+
+      const productToEdit: Product = {
+        id: String(data.id),
+        sku: String(data.sku),
+        name: String(data.name),
+        description: data.description ?? '',
+        unit: String(data.unit),
+        price: Number(data.price ?? 0),
+        stock: Number(data.stock ?? 0),
+        minStock: Number(data.minStock ?? 0),
+        isActive: Boolean(data.isActive),
+      }
+
+      handleEdit(productToEdit)
+      setNameSuggestions([])
+      setNameDuplicate(null)
+
+      if (!productToEdit.isActive) {
+        notify({
+          type: 'info',
+          title: 'Producto inactivo',
+          message: 'Edita y guarda para reactivarlo automáticamente.',
+        })
+      }
+    } catch (error) {
+      console.error('Error cargando producto para edición:', error)
+      notify({ type: 'error', title: 'No se pudo abrir', message: 'Intenta nuevamente' })
+    } finally {
+      setEditingSuggestionId(null)
+    }
   }
 
   const closeModal = () => {
@@ -331,7 +406,19 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     if (!confirm('¿Eliminar este producto?')) return
 
     try {
-      await fetch(`/api/products/${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/products/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       refresh()
     } catch (error) {
       console.error('Error eliminando producto:', error)
@@ -343,7 +430,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     if (!validateForm()) {
       return
     }
-    setSaving(true)
+    const isEditing = Boolean(editingProduct)
 
     const normalizedName = normalizeName(formData.name)
     if (
@@ -354,6 +441,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
       setFormErrors((prev) => ({ ...prev, name: `Ya existe: ${nameDuplicate.name} (SKU ${nameDuplicate.sku}).` }))
       return
     }
+    setSaving(true)
 
     try {
       const priceNum = parseFloat(formData.price.replace(',', '.'))
@@ -368,27 +456,55 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
         price: priceNum,
         stock: stockNum,
         minStock: minStockNum,
+        ...(isEditing ? { isActive: true } : {}),
       }
 
       console.log('[ProductosView] Enviando payload:', payload)
 
-      if (editingProduct) {
-        await fetch(`/api/products/${editingProduct.id}`, {
+      if (isEditing && editingProduct) {
+        const res = await fetch(`/api/products/${editingProduct.id}`, {
           method: 'PATCH',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
+        if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login'
+          }
+          return
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
       } else {
-        await fetch('/api/products', {
+        const res = await fetch('/api/products', {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
+        if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login'
+          }
+          return
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
       }
 
       closeModal()
-      setSaveSuccess(true)
-      notify({ type: 'success', title: 'Cambios guardados', message: editingProduct ? 'Producto actualizado correctamente' : 'Producto creado correctamente' })
+      if (isEditing) {
+        notify({
+          type: 'success',
+          title: 'Producto actualizado',
+          message: 'Los cambios se guardaron correctamente.',
+        })
+      } else {
+        setCreateSuccessVisible(true)
+      }
       refresh()
     } catch (error) {
       console.error('Error guardando producto:', error)
@@ -402,10 +518,13 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     <>
       <Header user={user} />
 
-      {saveSuccess && (
-        <div className={styles.successBanner}>
+      {createSuccessVisible && (
+        <div className={styles.successBanner} role="status" aria-live="polite">
           <span className={styles.successBannerIcon}>✓</span>
-          <span>Producto {editingProduct ? 'actualizado' : 'creado'} correctamente</span>
+          <div className={styles.successBannerContent}>
+            <span className={styles.successBannerTitle}>Producto creado</span>
+            <span className={styles.successBannerText}>Se agregó al catálogo correctamente.</span>
+          </div>
         </div>
       )}
 
@@ -708,7 +827,17 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                   )}
                   {nameDuplicate && (
                     <div className={styles.dupWarning}>
-                      ⚠ Ya existe este nombre: <b>{nameDuplicate.name}</b> (SKU {nameDuplicate.sku}) — {nameDuplicate.isActive ? 'Activo' : 'Inactivo'}.
+                      <span>
+                        ⚠ Ya existe este nombre: <b>{nameDuplicate.name}</b> (SKU {nameDuplicate.sku}) — {nameDuplicate.isActive ? 'Activo' : 'Inactivo'}.
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.dupActionBtn}
+                        onClick={() => handleEditFromSuggestion(nameDuplicate)}
+                        disabled={editingSuggestionId === nameDuplicate.id}
+                      >
+                        {editingSuggestionId === nameDuplicate.id ? 'Cargando…' : 'Editar este producto'}
+                      </button>
                     </div>
                   )}
 
@@ -725,7 +854,8 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                             key={p.id}
                             type="button"
                             className={styles.suggestItem}
-                            onClick={() => setFormData((prev) => ({ ...prev, name: p.name }))}
+                            onClick={() => handleEditFromSuggestion(p)}
+                            disabled={editingSuggestionId === p.id}
                           >
                             <span className={styles.suggestName}>{p.name}</span>
                             <span className={styles.suggestMeta}>SKU {p.sku} · {p.isActive ? 'Activo' : 'Inactivo'}</span>

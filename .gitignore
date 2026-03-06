@@ -9,11 +9,18 @@ dist/
 build/
 out/
 coverage/
-*.log
-.env
-.env.local
-.env.production
-package-lock.json
+
+# ── SECRETOS Y VARIABLES DE ENTORNO (¡CRUCIAL!) ──
+**/.env
+**/.env.*
+!**/.env.example 
+
+# ── Datos de la Base de Datos y Respaldos ──
+**/*.sql
+**/*.dump
+**/*.bak
+**/*.sqlite
+**/*.db
 
 # ── Tauri / Rust (artefactos compilados) ────
 target/
@@ -26,7 +33,7 @@ ChavalosServerApp/src-tauri/gen/
 *.AppImage
 *.dmg
 
-# ── Recursos regenerables por prepare-installer.ps1 ──
+# ── Recursos regenerables por scripts ───────
 ChavalosServerApp/src-tauri/binaries/
 ChavalosServerApp/src-tauri/resources/
 
@@ -43,7 +50,7 @@ _tmp_delete_test/
 # ── Versiones antiguas de scripts ───────────
 prepare-installer.v[0-9]*.ps1
 
-# ── IDE / Sistema ───────────────────────────
+# ── IDE / Sistema / Basura ──────────────────
 .vscode/
 .idea/
 .DS_Store
@@ -51,3 +58,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+witch master
+*.jpeg
+*.png

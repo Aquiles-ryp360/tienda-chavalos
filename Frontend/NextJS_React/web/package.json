@@ -1,6 +1,6 @@
 {
   "name": "ferreteria-chavalos-web",
-  "version": "1.0.0",
+  "version": "1.4.1",
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
@@ -26,7 +26,6 @@
     "swr": "^2.4.0"
   },
   "devDependencies": {
-    "@next/swc-win32-x64-msvc": "^15.5.7",
     "@types/bcrypt": "^5.0.2",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",

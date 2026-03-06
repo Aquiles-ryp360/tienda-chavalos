@@ -88,10 +88,16 @@
         try {
           const response = await fetch(
             `/api/products/next-sku?prefix=${encodeURIComponent(p)}`,
-            { signal: opts?.signal }
+            {
+              signal: opts?.signal,
+              credentials: 'include',
+            }
           )
 
           if (!response.ok) {
+            if (response.status === 401 && typeof window !== 'undefined') {
+              window.location.href = '/login'
+            }
             console.warn(`Failed to fetch next SKU for prefix ${p}`, response.status)
             return null
           }

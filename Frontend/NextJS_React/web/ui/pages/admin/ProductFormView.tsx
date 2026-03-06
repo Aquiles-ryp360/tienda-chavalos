@@ -78,6 +78,9 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   const [product, setProduct] = useState<Product | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null)
+  const [reactivationPending, setReactivationPending] = useState(false)
+  const effectiveProductId = selectedProductId ?? productId ?? null
 
   // Form state
   const [sku, setSku] = useState('')
@@ -124,11 +127,10 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   })
 
   useEffect(() => {
-    if (productId) {
-      loadProduct()
-      loadPriceHistory()
-    }
-  }, [productId])
+    if (!effectiveProductId) return
+    loadProduct(effectiveProductId)
+    loadPriceHistory(effectiveProductId)
+  }, [effectiveProductId])
 
   // Sugerencias / alerta de duplicado por nombre (case-insensitive)
 
@@ -147,14 +149,28 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
 
     fetch(`/api/products?search=${encodeURIComponent(q)}&limit=6&suggest=1`, {
       signal: controller.signal,
+      credentials: 'include',
     })
-      .then(async (r) => (r.ok ? r.json() : Promise.reject(await r.text())))
+      .then(async (r) => {
+        if (r.status === 401 && typeof window !== 'undefined') {
+          window.location.href = '/login'
+          return null
+        }
+        return r.ok ? r.json() : Promise.reject(await r.text())
+      })
       .then((data) => {
+        if (!data) return
         const items = Array.isArray(data) ? data : (data.items ?? [])
         setNameSuggestions(items)
 
         const key = normalizeName(name).toLowerCase()
-        const dup = items.find((p: any) => normalizeName(p.name).toLowerCase() === key) ?? null
+        const currentId = effectiveProductId || null
+        const dup =
+          items.find(
+            (p: any) =>
+              normalizeName(p.name).toLowerCase() === key &&
+              String(p.id) !== currentId
+          ) ?? null
         setNameDuplicate(dup)
       })
       .catch((e) => {
@@ -163,13 +179,13 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       .finally(() => setNameCheckLoading(false))
 
     return () => controller.abort()
-  }, [debouncedName])
+  }, [debouncedName, name, effectiveProductId])
 
   //.................................................................
 
   useEffect(() => {
     const q = normalizeName(name)
-    const currentId = productId || null
+    const currentId = effectiveProductId || null
 
     if (q.length < 2) {
       setNameSuggestions([])
@@ -181,7 +197,18 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     const t = setTimeout(async () => {
       setNameCheckLoading(true)
       try {
-        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`)
+        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`, {
+          credentials: 'include',
+        })
+        if (res.status === 401) {
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login'
+          }
+          return
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
         const data = await res.json()
         if (cancelled) return
 
@@ -210,12 +237,24 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       cancelled = true
       clearTimeout(t)
     }
-  }, [name, productId])
+  }, [name, effectiveProductId])
 
-  const loadProduct = async () => {
+  const loadProduct = async (id: string) => {
     try {
       setLoading(true)
-      const res = await fetch(`/api/products/${productId}`, { cache: 'no-store' })
+      const res = await fetch(`/api/products/${id}`, {
+        cache: 'no-store',
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
 
       if (data.id) {
@@ -228,6 +267,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         setStock(data.stock.toString())
         setMinStock(data.minStock.toString())
         setPresentations(data.presentations || [])
+        setReactivationPending(!data.isActive)
       }
     } catch (error) {
       console.error('Error cargando producto:', error)
@@ -237,9 +277,20 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     }
   }
 
-  const loadPriceHistory = async () => {
+  const loadPriceHistory = async (id: string) => {
     try {
-      const res = await fetch(`/api/price-changes?productId=${productId}&limit=50`)
+      const res = await fetch(`/api/price-changes?productId=${id}&limit=50`, {
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       setPriceChanges(data.changes || [])
     } catch (error) {
@@ -247,8 +298,17 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     }
   }
 
+  const handleSuggestionSelect = (suggestion: NameSuggestion) => {
+    setSelectedProductId(String(suggestion.id))
+    setReactivationPending(!suggestion.isActive)
+    setActiveTab('general')
+    setNameSuggestions([])
+    setNameDuplicate(null)
+  }
+
   const handleSaveProduct = async () => {
     const normalizedName = normalizeName(name)
+    const isEditing = Boolean(effectiveProductId)
 
     if (!sku.trim() || !name.trim() || !price || !unit) {
       setAlert({ open: true, type: 'error', message: 'Completa SKU, nombre, unidad y precio.' })
@@ -275,13 +335,14 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     setSaving(true)
 
     try {
-      const method = productId ? 'PUT' : 'POST'
-      const url = productId ? `/api/products/${productId}` : '/api/products'
+      const method = isEditing ? 'PATCH' : 'POST'
+      const url = isEditing ? `/api/products/${effectiveProductId}` : '/api/products'
 
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
+        credentials: 'include',
         body: JSON.stringify({
           sku: sku.trim(),
           name: normalizedName,
@@ -290,8 +351,15 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
           price: priceN,
           stock: stockN,
           minStock: minStockN,
+          ...(isEditing ? { isActive: true } : {}),
         }),
       })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
 
       const data = await res.json()
 
@@ -307,13 +375,14 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       setAlert({
         open: true,
         type: 'success',
-        message: productId ? 'Producto actualizado correctamente.' : 'Producto creado correctamente.',
+        message: isEditing ? 'Producto actualizado correctamente.' : 'Producto creado correctamente.',
       })
+      setReactivationPending(false)
       router.refresh()
-      if (!productId && data.id) {
+      if (!isEditing && data.id) {
         window.location.href = `/admin/productos/${data.id}`
-      } else if (productId) {
-        loadProduct()
+      } else if (isEditing && effectiveProductId) {
+        loadProduct(effectiveProductId)
       }
     } catch (error) {
       console.error('Error guardando producto:', error)
@@ -335,8 +404,13 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     }
 
     try {
-      const res = await fetch(`/api/products/${productId}/presentations`, {
+      if (!effectiveProductId) {
+        notify({ type: 'warning', title: 'Guarda primero', message: 'Debes guardar el producto antes de agregar presentaciones' })
+        return
+      }
+      const res = await fetch(`/api/products/${effectiveProductId}/presentations`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newPresentation.name,
@@ -348,6 +422,12 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
           isDefault: newPresentation.isDefault,
         }),
       })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
 
       const data = await res.json()
 
@@ -378,11 +458,16 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     }
 
     try {
+      if (!effectiveProductId) {
+        notify({ type: 'warning', title: 'Producto no definido', message: 'No se pudo identificar el producto para el cambio de precio' })
+        return
+      }
       const res = await fetch('/api/price-changes', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          productId,
+          productId: effectiveProductId,
           presentationId: priceChangeForm.presentationId || undefined,
           changeType: priceChangeForm.changeType,
           changeMode: priceChangeForm.changeMode,
@@ -390,6 +475,12 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
           reason: priceChangeForm.reason,
         }),
       })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
 
       const data = await res.json()
 
@@ -407,15 +498,15 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         changeValue: '',
         reason: '',
       })
-      loadProduct()
-      loadPriceHistory()
+      loadProduct(effectiveProductId)
+      loadPriceHistory(effectiveProductId)
     } catch (error) {
       console.error('Error aplicando cambio:', error)
       notify({ type: 'error', title: 'Error al aplicar', message: 'No se pudo completar la operación' })
     }
   }
 
-  if (!productId) {
+  if (!effectiveProductId) {
     // Crear nuevo producto
     return (
       <>
@@ -456,7 +547,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                   <div className={styles.suggestHint}>Buscando coincidencias…</div>
                 )}
 
-                {!nameDuplicate && nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
+                {nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
                   <div className={styles.suggestBox}>
                     <div className={styles.suggestTitle}>Coincidencias</div>
                     <div className={styles.suggestList}>
@@ -464,8 +555,8 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                         <button
                           key={p.id}
                           type="button"
-                          className={styles.suggestItem}
-                          onClick={() => setName(p.name)}
+                          className={`${styles.suggestItem} ${!p.isActive ? styles.suggestItemInactive : ''}`}
+                          onClick={() => handleSuggestionSelect(p)}
                         >
                           <span className={styles.suggestName}>{p.name}</span>
                           <span className={styles.suggestMeta}>SKU {p.sku} · {p.isActive ? 'Activo' : 'Inactivo'}</span>
@@ -606,6 +697,11 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
 
           {activeTab === 'general' && (
             <div className={styles.tabContent}>
+              {reactivationPending && (
+                <div className={styles.inactiveNotice}>
+                  Estás editando un producto inactivo. Al guardar, se volverá a activar.
+                </div>
+              )}
               <div className={styles.form}>
                 <div className={styles.formGroup}>
                   <label className={styles.label}>SKU</label>
@@ -627,6 +723,34 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                     onChange={(e) => setName(e.target.value)}
                     className={styles.input}
                   />
+                  {nameDuplicate && (
+                    <div className={styles.dupWarning}>
+                      ⚠ Ya existe este nombre: <b>{nameDuplicate.name}</b> (SKU {nameDuplicate.sku}) — {nameDuplicate.isActive ? 'Activo' : 'Inactivo'}.
+                    </div>
+                  )}
+
+                  {nameCheckLoading && normalizeName(name).length >= 2 && (
+                    <div className={styles.suggestHint}>Buscando coincidencias…</div>
+                  )}
+
+                  {nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
+                    <div className={styles.suggestBox}>
+                      <div className={styles.suggestTitle}>Coincidencias</div>
+                      <div className={styles.suggestList}>
+                        {nameSuggestions.slice(0, 6).map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            className={`${styles.suggestItem} ${!p.isActive ? styles.suggestItemInactive : ''}`}
+                            onClick={() => handleSuggestionSelect(p)}
+                          >
+                            <span className={styles.suggestName}>{p.name}</span>
+                            <span className={styles.suggestMeta}>SKU {p.sku} · {p.isActive ? 'Activo' : 'Inactivo'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className={styles.formGroup}>

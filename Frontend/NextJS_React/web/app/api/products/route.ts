@@ -52,11 +52,11 @@ export async function GET(request: NextRequest) {
       offset,
     })
   } catch (error: any) {
-    console.error('Error en GET /api/products:', error)
-    
     if (error.message === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
+    
+    console.error('Error en GET /api/products:', error)
 
     return NextResponse.json(
       { error: 'Error al obtener productos' },
@@ -102,8 +102,6 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     )
   } catch (error: any) {
-    console.error('Error en POST /api/products:', error)
-
     if (error.message === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
@@ -111,6 +109,8 @@ export async function POST(request: NextRequest) {
     if (error.message === 'Requiere rol ADMIN') {
       return NextResponse.json({ error: 'Requiere rol ADMIN' }, { status: 403 })
     }
+
+    console.error('Error en POST /api/products:', error)
 
     if (error.code === 'DUPLICATE_PRODUCT_NAME') {
       return NextResponse.json(

@@ -308,15 +308,37 @@ small {
 }
 
 .suggestItem {
+  display: block;
+  width: 100%;
   text-align: left;
   padding: 8px 10px;
   border: none;
   background: transparent;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .suggestItem:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.suggestItem:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.suggestItemInactive {
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.inactiveNotice {
+  margin-bottom: 1rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .suggestName {

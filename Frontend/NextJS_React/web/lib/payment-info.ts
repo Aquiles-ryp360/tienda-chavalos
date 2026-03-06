@@ -9,7 +9,7 @@ export const PAYMENT_INFO = {
   slogan: 'Ferretería y acabados',
 }
 
-export type PaymentMethodUi = 'EFECTIVO' | 'YAPE' | 'TRANSFERENCIA'
+export type PaymentMethodUi = 'EFECTIVO' | 'YAPE' | 'TRANSFERENCIA' | 'TARJETA'
 
 export function sanitizePhoneE164Peru(input: string): string {
   const digits = (input || '').replace(/\D+/g, '')

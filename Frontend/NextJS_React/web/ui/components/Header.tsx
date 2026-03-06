@@ -18,7 +18,10 @@ export function Header({ user }: HeaderProps) {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' })
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      })
       router.push('/login')
     } catch (error) {
       console.error('Error al cerrar sesión:', error)

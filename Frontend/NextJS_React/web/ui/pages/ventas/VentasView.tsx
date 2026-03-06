@@ -80,7 +80,18 @@ export function VentasView({ user }: VentasViewProps) {
 
   const loadSales = async () => {
     try {
-      const res = await fetch('/api/sales?limit=50')
+      const res = await fetch('/api/sales?limit=50', {
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       // Normalizar totales a number
       const normalizedSales = (data.sales || []).map((sale: any) => ({
@@ -97,7 +108,18 @@ export function VentasView({ user }: VentasViewProps) {
 
   const handleViewDetail = async (saleId: string) => {
     try {
-      const res = await fetch(`/api/sales/${saleId}`)
+      const res = await fetch(`/api/sales/${saleId}`, {
+        credentials: 'include',
+      })
+      if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login'
+        }
+        return
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       // Normalizar todos los campos numéricos
       const normalized = {
