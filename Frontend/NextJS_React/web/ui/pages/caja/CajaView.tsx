@@ -12,7 +12,12 @@ import { ShareWhatsAppModal } from '@/ui/components/ShareWhatsAppModal'
 import { PAYMENT_INFO, PaymentMethodUi, formatWhatsAppPaymentText } from '@/lib/payment-info'
 import { generatePaymentCardPng } from '@/lib/payment-share-image'
 import { shareWhatsAppWithImage } from '@/lib/share-whatsapp'
-import { useProductSearch } from '@/ui/hooks/useProductSearch'
+import type {
+  CatalogProduct as Product,
+  CatalogProductPresentation as ProductPresentation,
+} from '@/ui/catalog/product-catalog.types'
+import { useBackgroundCatalogSync } from '@/ui/hooks/useBackgroundCatalogSync'
+import { useSmartProductSearch } from '@/ui/hooks/useSmartProductSearch'
 import styles from './caja.module.css'
 
 // Unidades que permiten decimales (consistente con backend)
@@ -79,29 +84,6 @@ function isBasePresentation(
   return presentation.isDefault && Number(presentation.factorToBase ?? 1) === 1
 }
 
-interface ProductPresentation {
-  id: string
-  name: string
-  unit: string
-  factorToBase: number
-  priceOverride: number | null
-  computedUnitPrice: number
-  isDefault: boolean
-  isActive: boolean
-}
-
-interface Product {
-  id: string
-  sku: string
-  name: string
-  price: number
-  stock: number
-  minStock: number
-  unit: string
-  isActive: boolean
-  presentations?: ProductPresentation[]
-}
-
 interface CartItem {
   product: Product
   productId?: string
@@ -139,21 +121,29 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const { notify } = useToast()
   const [search, setSearch] = useState('')
 
-  // ── SWR + Debounce + AbortController (búsqueda optimizada para LAN) ──
+  useBackgroundCatalogSync({
+    initialProducts,
+    activeOnly: false,
+    inStockOnly: false,
+    includePresentations: true,
+    chunkSize: 50,
+  })
+
   const {
     products,
+    catalogProducts,
+    catalogVersion,
     isStale,
     isSearching,
     refresh,
-  } = useProductSearch(search, {
+  } = useSmartProductSearch(search, {
     limit: 20,
+    activeOnly: true,
     inStockOnly: true,
     includePresentations: true,
     debounceMs: 300,
-    fallbackData: {
-      products: initialProducts,
-      total: initialProducts.length,
-    },
+    bootstrapProducts: initialProducts,
+    remoteFallbackThreshold: 2,
   })
 
   const [cart, setCart] = useState<CartItem[]>([])
@@ -311,24 +301,20 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     }
   }, [cart, paymentMethod, cartHydrated])
 
-  const productsById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
-
-  // Clave estable basada en el CONTENIDO de los productos (no en la referencia del array).
-  // Esto evita que el useEffect se dispare infinitamente por cambios de referencia.
-  const productsVersion = useMemo(
-    () => products.map(p => `${p.id}:${p.price}:${p.stock}:${p.unit}`).join('|'),
-    [products]
+  const productsById = useMemo(
+    () => new Map(catalogProducts.map((product) => [product.id, product])),
+    [catalogProducts]
   )
 
   // Sincronizar carrito cuando se refresca la lista de productos (unidad/presentaciones pueden cambiar)
   useEffect(() => {
-    if (!productsVersion || !cartHydrated) return
+    if (catalogVersion === 0 || !cartHydrated) return
 
     setCart((current) => {
       if (!current.length) return current
 
       // Construir mapa dentro del callback para usar datos frescos sin depender de refs
-      const pMap = new Map(products.map((p) => [p.id, p]))
+      const pMap = new Map(catalogProducts.map((product) => [product.id, product]))
 
       let changed = false
       const updatedCart = current.map((item) => {
@@ -383,7 +369,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       return changed ? updatedCart : current
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productsVersion, cartHydrated])
+  }, [catalogProducts, catalogVersion, cartHydrated])
 
   const getEffectivePresentation = (item: CartItem): ProductPresentation | null => {
     // Intentar primero con datos live del search, luego con datos almacenados en el cart item

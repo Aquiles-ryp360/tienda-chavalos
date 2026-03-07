@@ -10,7 +10,7 @@ const CAJA_PRODUCTS_PAGE_SIZE = 20
 const getInitialAdminProductsCached = unstable_cache(
   async () =>
     productsAPI.searchProducts({
-      isActive: true,
+      includePresentations: true,
       limit: ADMIN_PRODUCTS_PAGE_SIZE,
       offset: 0,
     }),

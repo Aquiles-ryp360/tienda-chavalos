@@ -3,39 +3,26 @@
 WhatsApp Image 2026-01-23 at 16.52.23.jpeg */
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/ui/components/Header'
 import { Button } from '@/ui/components/Button'
-import { formatMoneyPEN, roundToDecimals } from '@/lib/format-money'
+import { formatMoneyPEN } from '@/lib/format-money'
 import { useToast } from '@/ui/components/Toast/ToastContext'
 import { CenteredAlertModal } from '@/ui/components/CenteredAlertModal'
+import type {
+  CatalogProduct as Product,
+  CatalogProductPresentation as ProductPresentation,
+} from '@/ui/catalog/product-catalog.types'
+import { mergeIntoProductCatalog } from '@/ui/catalog/product-catalog-store'
+import { startBackgroundCatalogSync, useBackgroundCatalogSync } from '@/ui/hooks/useBackgroundCatalogSync'
+import { useSmartProductSearch } from '@/ui/hooks/useSmartProductSearch'
 import styles from './product-form.module.css'
 
 const PRODUCT_UNITS = ['UNIDAD', 'METRO', 'LITRO', 'KILO', 'CAJA', 'PAQUETE', 'ROLLO']
 
-interface ProductPresentation {
-  id: string
-  name: string
-  unit: string
-  factorToBase: number
-  priceOverride: number | null
-  computedUnitPrice: number
-  isDefault: boolean
-  isActive: boolean
-}
-
-interface Product {
-  id: string
-  sku: string
-  name: string
-  description?: string
-  unit: string
-  price: number
-  stock: number
-  minStock: number
-  isActive: boolean
-  presentations?: ProductPresentation[]
+function normalizeProductName(value: string) {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 interface PriceChange {
@@ -62,18 +49,17 @@ interface ProductFormViewProps {
 
 type Tab = 'general' | 'presentations' | 'price-history'
 
-function useDebouncedValue<T>(value: T, delay = 350) {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(id)
-  }, [value, delay])
-  return debounced
-}
-
 export function ProductFormView({ user, productId }: ProductFormViewProps) {
   const router = useRouter()
   const { notify } = useToast()
+
+  useBackgroundCatalogSync({
+    activeOnly: false,
+    inStockOnly: false,
+    includePresentations: true,
+    chunkSize: 50,
+  })
+
   const [activeTab, setActiveTab] = useState<Tab>('general')
   const [product, setProduct] = useState<Product | null>(null)
   const [loading, setLoading] = useState(false)
@@ -87,11 +73,6 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
   const [name, setName] = useState('')
 
   type NameSuggestion = Pick<Product, 'id' | 'sku' | 'name' | 'isActive'>
-  const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
-  const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
-  const [nameCheckLoading, setNameCheckLoading] = useState(false)
-
-  const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
 
   const [description, setDescription] = useState('')
   const [unit, setUnit] = useState('UNIDAD')
@@ -126,120 +107,103 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     message: '',
   })
 
-  useEffect(() => {
-    if (!effectiveProductId) return
-    loadProduct(effectiveProductId)
-    loadPriceHistory(effectiveProductId)
-  }, [effectiveProductId])
+  const normalizedNameQuery = useMemo(() => normalizeProductName(name), [name])
+  const {
+    products: smartMatches,
+    catalogProducts,
+    isSearching: isCheckingNameSearch,
+    isStale: isCheckingNameStale,
+    isFallbackLoading: isCheckingNameFallback,
+  } = useSmartProductSearch(normalizedNameQuery, {
+    activeOnly: false,
+    includePresentations: false,
+    limit: 8,
+    debounceMs: 250,
+    remoteFallbackThreshold: 0,
+    enableEmptyQueryFallback: false,
+  })
+  const nameSuggestions = useMemo<NameSuggestion[]>(() => {
+    if (normalizedNameQuery.length < 2) return []
 
-  // Sugerencias / alerta de duplicado por nombre (case-insensitive)
+    return smartMatches
+      .filter((product) => String(product.id) !== (effectiveProductId ?? ''))
+      .map((product) => ({
+        id: product.id,
+        sku: product.sku,
+        name: product.name,
+        isActive: product.isActive,
+      }))
+  }, [effectiveProductId, normalizedNameQuery.length, smartMatches])
+  const nameDuplicate = useMemo<NameSuggestion | null>(() => {
+    if (normalizedNameQuery.length < 2) return null
 
-  const debouncedName = useDebouncedValue(name, 350)
+    const normalizedKey = normalizedNameQuery.toLowerCase()
+    return (
+      nameSuggestions.find(
+        (product) => normalizeProductName(product.name).toLowerCase() === normalizedKey
+      ) ?? null
+    )
+  }, [nameSuggestions, normalizedNameQuery])
+  const nameCheckLoading =
+    normalizedNameQuery.length >= 2 &&
+    (isCheckingNameSearch || isCheckingNameStale || isCheckingNameFallback)
+  const catalogProductsById = useMemo(
+    () => new Map(catalogProducts.map((catalogProduct) => [String(catalogProduct.id), catalogProduct])),
+    [catalogProducts]
+  )
 
-  useEffect(() => {
-    const q = normalizeName(debouncedName)
-    if (q.length < 2) {
-      setNameSuggestions([])
-      setNameDuplicate(null)
-      return
-    }
-
-    const controller = new AbortController()
-    setNameCheckLoading(true)
-
-    fetch(`/api/products?search=${encodeURIComponent(q)}&limit=6&suggest=1`, {
-      signal: controller.signal,
-      credentials: 'include',
+  const syncAbsoluteCatalog = useCallback(() => {
+    void startBackgroundCatalogSync({
+      activeOnly: false,
+      inStockOnly: false,
+      includePresentations: true,
+      force: true,
+    }).catch((error) => {
+      console.warn('No se pudo resincronizar el catálogo de productos', error)
     })
-      .then(async (r) => {
-        if (r.status === 401 && typeof window !== 'undefined') {
-          window.location.href = '/login'
-          return null
-        }
-        return r.ok ? r.json() : Promise.reject(await r.text())
-      })
-      .then((data) => {
-        if (!data) return
-        const items = Array.isArray(data) ? data : (data.items ?? [])
-        setNameSuggestions(items)
+  }, [])
 
-        const key = normalizeName(name).toLowerCase()
-        const currentId = effectiveProductId || null
-        const dup =
-          items.find(
-            (p: any) =>
-              normalizeName(p.name).toLowerCase() === key &&
-              String(p.id) !== currentId
-          ) ?? null
-        setNameDuplicate(dup)
-      })
-      .catch((e) => {
-        if (e?.name !== 'AbortError') console.error(e)
-      })
-      .finally(() => setNameCheckLoading(false))
+  const applyProductToForm = useCallback((data: Product) => {
+    setProduct(data)
+    setSku(data.sku)
+    setName(data.name)
+    setDescription(data.description || '')
+    setUnit(data.unit)
+    setPrice(data.price.toString())
+    setStock(data.stock.toString())
+    setMinStock(data.minStock.toString())
+    setPresentations(data.presentations || [])
+    setReactivationPending(!data.isActive)
+  }, [])
 
-    return () => controller.abort()
-  }, [debouncedName, name, effectiveProductId])
-
-  //.................................................................
-
-  useEffect(() => {
-    const q = normalizeName(name)
-    const currentId = effectiveProductId || null
-
-    if (q.length < 2) {
-      setNameSuggestions([])
-      setNameDuplicate(null)
-      return
-    }
-
-    let cancelled = false
-    const t = setTimeout(async () => {
-      setNameCheckLoading(true)
-      try {
-        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`, {
-          credentials: 'include',
-        })
-        if (res.status === 401) {
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login'
-          }
-          return
-        }
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`)
-        }
-        const data = await res.json()
-        if (cancelled) return
-
-        const list: NameSuggestion[] = (data.products || []).map((p: any) => ({
-          id: String(p.id),
-          sku: String(p.sku),
-          name: String(p.name),
-          isActive: Boolean(p.isActive),
+  const toCatalogProduct = useCallback((data: any): Product => ({
+    id: String(data.id),
+    sku: String(data.sku),
+    name: String(data.name),
+    description: data.description ?? null,
+    unit: String(data.unit),
+    price: Number(data.price ?? 0),
+    stock: Number(data.stock ?? 0),
+    minStock: Number(data.minStock ?? 0),
+    isActive: Boolean(data.isActive),
+    presentations: Array.isArray(data.presentations)
+      ? data.presentations.map((presentation: any) => ({
+          id: String(presentation.id),
+          name: String(presentation.name),
+          unit: String(presentation.unit),
+          factorToBase: Number(presentation.factorToBase ?? 1),
+          priceOverride:
+            presentation.priceOverride === null || presentation.priceOverride === undefined
+              ? null
+              : Number(presentation.priceOverride),
+          computedUnitPrice: Number(presentation.computedUnitPrice ?? 0),
+          isDefault: Boolean(presentation.isDefault),
+          isActive: Boolean(presentation.isActive),
         }))
+      : undefined,
+  }), [])
 
-        setNameSuggestions(list)
-        const qKey = q.toLowerCase()
-        const exact = list.find((p) => normalizeName(p.name).toLowerCase() === qKey && p.id !== currentId)
-        setNameDuplicate(exact || null)
-      } catch {
-        if (!cancelled) {
-          setNameSuggestions([])
-          setNameDuplicate(null)
-        }
-      } finally {
-        if (!cancelled) setNameCheckLoading(false)
-      }
-    }, 250)
-
-    return () => {
-      cancelled = true
-      clearTimeout(t)
-    }
-  }, [name, effectiveProductId])
-
-  const loadProduct = async (id: string) => {
+  const loadProduct = useCallback(async (id: string) => {
     try {
       setLoading(true)
       const res = await fetch(`/api/products/${id}`, {
@@ -258,16 +222,9 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
       const data = await res.json()
 
       if (data.id) {
-        setProduct(data)
-        setSku(data.sku)
-        setName(data.name)
-        setDescription(data.description || '')
-        setUnit(data.unit)
-        setPrice(data.price.toString())
-        setStock(data.stock.toString())
-        setMinStock(data.minStock.toString())
-        setPresentations(data.presentations || [])
-        setReactivationPending(!data.isActive)
+        const normalizedProduct = toCatalogProduct(data)
+        applyProductToForm(normalizedProduct)
+        mergeIntoProductCatalog([normalizedProduct])
       }
     } catch (error) {
       console.error('Error cargando producto:', error)
@@ -275,9 +232,9 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [applyProductToForm, notify, toCatalogProduct])
 
-  const loadPriceHistory = async (id: string) => {
+  const loadPriceHistory = useCallback(async (id: string) => {
     try {
       const res = await fetch(`/api/price-changes?productId=${id}&limit=50`, {
         credentials: 'include',
@@ -296,18 +253,31 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
     } catch (error) {
       console.error('Error cargando historial de precios:', error)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!effectiveProductId) return
+
+    const cachedProduct = catalogProductsById.get(effectiveProductId)
+    if (cachedProduct && (!product || product.id !== cachedProduct.id)) {
+      applyProductToForm(cachedProduct)
+    }
+  }, [applyProductToForm, catalogProductsById, effectiveProductId, product])
+
+  useEffect(() => {
+    if (!effectiveProductId) return
+    loadProduct(effectiveProductId)
+    loadPriceHistory(effectiveProductId)
+  }, [effectiveProductId, loadPriceHistory, loadProduct])
 
   const handleSuggestionSelect = (suggestion: NameSuggestion) => {
     setSelectedProductId(String(suggestion.id))
     setReactivationPending(!suggestion.isActive)
     setActiveTab('general')
-    setNameSuggestions([])
-    setNameDuplicate(null)
   }
 
   const handleSaveProduct = async () => {
-    const normalizedName = normalizeName(name)
+    const normalizedName = normalizeProductName(name)
     const isEditing = Boolean(effectiveProductId)
 
     if (!sku.trim() || !name.trim() || !price || !unit) {
@@ -378,6 +348,10 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         message: isEditing ? 'Producto actualizado correctamente.' : 'Producto creado correctamente.',
       })
       setReactivationPending(false)
+      if (data?.id) {
+        mergeIntoProductCatalog([toCatalogProduct({ ...data, presentations })])
+      }
+      syncAbsoluteCatalog()
       router.refresh()
       if (!isEditing && data.id) {
         window.location.href = `/admin/productos/${data.id}`
@@ -436,7 +410,11 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         return
       }
 
-      setPresentations([...presentations, data])
+      const updatedPresentations = [...presentations, data]
+      setPresentations(updatedPresentations)
+      if (product) {
+        mergeIntoProductCatalog([{ ...product, presentations: updatedPresentations }])
+      }
       setNewPresentation({
         name: '',
         unit: 'UNIDAD',
@@ -444,6 +422,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         priceOverride: '',
         isDefault: false,
       })
+      syncAbsoluteCatalog()
       notify({ type: 'success', title: 'Presentación agregada', message: 'La presentación se agregó correctamente' })
     } catch (error) {
       console.error('Error agregando presentación:', error)
@@ -498,6 +477,7 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
         changeValue: '',
         reason: '',
       })
+      syncAbsoluteCatalog()
       loadProduct(effectiveProductId)
       loadPriceHistory(effectiveProductId)
     } catch (error) {
@@ -543,11 +523,11 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                   </div>
                 )}
 
-                {nameCheckLoading && normalizeName(name).length >= 2 && (
+                {nameCheckLoading && normalizeProductName(name).length >= 2 && (
                   <div className={styles.suggestHint}>Buscando coincidencias…</div>
                 )}
 
-                {nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
+                {nameSuggestions.length > 0 && normalizeProductName(name).length >= 2 && (
                   <div className={styles.suggestBox}>
                     <div className={styles.suggestTitle}>Coincidencias</div>
                     <div className={styles.suggestList}>
@@ -729,11 +709,11 @@ export function ProductFormView({ user, productId }: ProductFormViewProps) {
                     </div>
                   )}
 
-                  {nameCheckLoading && normalizeName(name).length >= 2 && (
+                  {nameCheckLoading && normalizeProductName(name).length >= 2 && (
                     <div className={styles.suggestHint}>Buscando coincidencias…</div>
                   )}
 
-                  {nameSuggestions.length > 0 && normalizeName(name).length >= 2 && (
+                  {nameSuggestions.length > 0 && normalizeProductName(name).length >= 2 && (
                     <div className={styles.suggestBox}>
                       <div className={styles.suggestTitle}>Coincidencias</div>
                       <div className={styles.suggestList}>

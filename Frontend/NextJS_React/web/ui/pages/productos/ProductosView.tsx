@@ -1,26 +1,20 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
 import { SearchBar } from '@/ui/components/SearchBar'
 import { formatMoneyPEN } from '@/lib/format-money'
-import { generateFullSku, slugToSkuPrefix } from '@/lib/sku-generator'
+import { generateFullSku } from '@/lib/sku-generator'
 import { useToast } from '@/ui/components/Toast/ToastContext'
-import { useProductSearch } from '@/ui/hooks/useProductSearch'
+import type { CatalogProduct as Product } from '@/ui/catalog/product-catalog.types'
+import { useBackgroundCatalogSync } from '@/ui/hooks/useBackgroundCatalogSync'
+import { useSmartProductSearch } from '@/ui/hooks/useSmartProductSearch'
 import styles from './productos.module.css'
 
-interface Product {
-  id: string
-  sku: string
-  name: string
-  description?: string | null
-  unit: string
-  price: number
-  stock: number
-  minStock: number
-  isActive: boolean
+function normalizeProductName(value: string) {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 interface ProductosViewProps {
@@ -55,26 +49,36 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   const { notify } = useToast()
   const [search, setSearch] = useState('')
 
-  // ── SWR + Debounce + AbortController (búsqueda optimizada para LAN) ──
+  useBackgroundCatalogSync({
+    initialProducts,
+    activeOnly: false,
+    inStockOnly: false,
+    includePresentations: true,
+    chunkSize: 50,
+  })
+
   const {
     products,
+    catalogProducts,
     total,
-    debouncedQuery: debouncedSearch,
     isLoading: loading,
     isStale,
     isSearching,
+    isFallbackLoading,
     hasMore,
     skip,
+    loadMore,
     refresh,
-  } = useProductSearch(search, {
+  } = useSmartProductSearch(search, {
+    activeOnly: false,
+    includePresentations: false,
     limit: 30,
-    fallbackData: {
-      products: initialProducts,
-      total: initialTotal,
-    },
+    debounceMs: 300,
+    bootstrapProducts: initialProducts,
+    bootstrapTotal: initialTotal,
+    remoteFallbackThreshold: 2,
   })
 
-  const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [showModal, setShowModal] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [createSuccessVisible, setCreateSuccessVisible] = useState(false)
@@ -94,70 +98,52 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
   type NameSuggestion = Pick<Product, 'id' | 'sku' | 'name' | 'isActive'>
 
-  const [nameSuggestions, setNameSuggestions] = useState<NameSuggestion[]>([])
-  const [nameDuplicate, setNameDuplicate] = useState<NameSuggestion | null>(null)
-  const [nameCheckLoading, setNameCheckLoading] = useState(false)
   const [editingSuggestionId, setEditingSuggestionId] = useState<string | null>(null)
+  const catalogProductsById = useMemo(
+    () => new Map(catalogProducts.map((product) => [product.id, product])),
+    [catalogProducts]
+  )
+  const normalizedFormName = useMemo(() => normalizeProductName(formData.name), [formData.name])
+  const {
+    products: modalMatches,
+    isSearching: isCheckingNameSearch,
+    isStale: isCheckingNameStale,
+    isFallbackLoading: isCheckingNameFallback,
+  } = useSmartProductSearch(showModal ? normalizedFormName : '', {
+    activeOnly: false,
+    includePresentations: false,
+    limit: 8,
+    debounceMs: 250,
+    bootstrapProducts: initialProducts,
+    remoteFallbackThreshold: 0,
+    enableEmptyQueryFallback: false,
+  })
+  const nameSuggestions = useMemo<NameSuggestion[]>(() => {
+    if (!showModal || normalizedFormName.length < 2) return []
 
-  const normalizeName = (s: string) => s.trim().replace(/\s+/g, ' ')
+    return modalMatches
+      .filter((product) => product.id !== editingProduct?.id)
+      .map((product) => ({
+        id: product.id,
+        sku: product.sku,
+        name: product.name,
+        isActive: product.isActive,
+      }))
+  }, [editingProduct?.id, modalMatches, normalizedFormName.length, showModal])
+  const nameDuplicate = useMemo<NameSuggestion | null>(() => {
+    if (!showModal || normalizedFormName.length < 2) return null
 
-  // Sugerencias / alerta de duplicado por nombre (solo cuando el modal está abierto)
-  useEffect(() => {
-    if (!showModal) return
-    const q = normalizeName(formData.name)
-    const currentId = editingProduct?.id || null
-
-    if (q.length < 2) {
-      setNameSuggestions([])
-      setNameDuplicate(null)
-      return
-    }
-
-    let cancelled = false
-    const t = setTimeout(async () => {
-      setNameCheckLoading(true)
-      try {
-        const res = await fetch(`/api/products?search=${encodeURIComponent(q)}&limit=8&offset=0`, {
-          credentials: 'include',
-        })
-        if (res.status === 401) {
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login'
-          }
-          return
-        }
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`)
-        }
-        const data = await res.json()
-        if (cancelled) return
-
-        const list: NameSuggestion[] = (data.products || []).map((p: any) => ({
-          id: String(p.id),
-          sku: String(p.sku),
-          name: String(p.name),
-          isActive: Boolean(p.isActive),
-        }))
-        setNameSuggestions(list)
-
-        const qKey = q.toLowerCase()
-        const exact = list.find((p) => normalizeName(p.name).toLowerCase() === qKey && p.id !== currentId)
-        setNameDuplicate(exact || null)
-      } catch {
-        if (!cancelled) {
-          setNameSuggestions([])
-          setNameDuplicate(null)
-        }
-      } finally {
-        if (!cancelled) setNameCheckLoading(false)
-      }
-    }, 250)
-
-    return () => {
-      cancelled = true
-      clearTimeout(t)
-    }
-  }, [showModal, formData.name, editingProduct?.id])
+    const nameKey = normalizedFormName.toLowerCase()
+    return (
+      nameSuggestions.find((product) => normalizeProductName(product.name).toLowerCase() === nameKey) ??
+      null
+    )
+  }, [nameSuggestions, normalizedFormName, showModal])
+  const nameCheckLoading =
+    showModal &&
+    normalizedFormName.length >= 2 &&
+    (isCheckingNameSearch || isCheckingNameStale || isCheckingNameFallback)
+  const loadingMore = hasMore && !isSearching && (isFallbackLoading || isStale)
 
   useEffect(() => {
     if (!createSuccessVisible) return
@@ -187,46 +173,6 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
       document.body.style.overflow = 'unset'
     }
   }, [showModal])
-
-  // Carga paginada: "Cargar más" aún usa fetch directo + merge
-  const fetchMoreProducts = async () => {
-    try {
-      setLoadingMore(true)
-      const params = new URLSearchParams()
-      if (debouncedSearch) params.append('search', debouncedSearch)
-      params.append('isActive', 'true')
-      params.append('limit', '30')
-      params.append('offset', String(skip))
-
-      const res = await fetch(`/api/products?${params}`, {
-        credentials: 'include',
-      })
-      if (res.status === 401) {
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login'
-        }
-        return
-      }
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      const items: Product[] = data.products || data.items || []
-
-      // Merge con datos actuales de SWR via mutate
-      refresh((prev) => {
-        if (!prev) return { products: items, total: Number(data.total ?? 0) }
-        return {
-          products: [...prev.products, ...items],
-          total: Number(data.total ?? prev.total),
-        }
-      }, { revalidate: false })
-    } catch (error) {
-      console.error('Error cargando más productos:', error)
-    } finally {
-      setLoadingMore(false)
-    }
-  }
 
   const handleCreate = () => {
     setEditingProduct(null)
@@ -263,6 +209,20 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
   const handleEditFromSuggestion = async (suggestion: NameSuggestion) => {
     setEditingSuggestionId(suggestion.id)
     try {
+      const cachedProduct = catalogProductsById.get(suggestion.id)
+      if (cachedProduct) {
+        handleEdit(cachedProduct)
+
+        if (!cachedProduct.isActive) {
+          notify({
+            type: 'info',
+            title: 'Producto inactivo',
+            message: 'Edita y guarda para reactivarlo automáticamente.',
+          })
+        }
+        return
+      }
+
       const res = await fetch(`/api/products/${suggestion.id}`, {
         cache: 'no-store',
         credentials: 'include',
@@ -295,8 +255,6 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
       }
 
       handleEdit(productToEdit)
-      setNameSuggestions([])
-      setNameDuplicate(null)
 
       if (!productToEdit.isActive) {
         notify({
@@ -438,10 +396,10 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     }
     const isEditing = Boolean(editingProduct)
 
-    const normalizedName = normalizeName(formData.name)
+    const normalizedName = normalizeProductName(formData.name)
     if (
       nameDuplicate &&
-      normalizeName(nameDuplicate.name).toLowerCase() === normalizedName.toLowerCase() &&
+      normalizeProductName(nameDuplicate.name).toLowerCase() === normalizedName.toLowerCase() &&
       nameDuplicate.id !== (editingProduct?.id || null)
     ) {
       setFormErrors((prev) => ({ ...prev, name: `Ya existe: ${nameDuplicate.name} (SKU ${nameDuplicate.sku}).` }))
@@ -456,7 +414,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
 
       const payload = {
         sku: String(formData.sku).trim(),
-      name: normalizeName(String(formData.name)),
+      name: normalizeProductName(String(formData.name)),
       description: formData.description ? String(formData.description).trim() : null,
         unit: formData.unit,
         price: priceNum,
@@ -563,22 +521,24 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
         ) : products.length === 0 ? (
           <div className={styles.emptyState}>
             <p className={styles.emptyIcon}>📦</p>
-            <h3>No hay productos</h3>
-            <p>Comienza creando tu primer producto</p>
-            <Button variant="primary" onClick={handleCreate}>
-              + Nuevo Producto
-            </Button>
+            <h3>{search ? 'No se encontraron productos' : 'No hay productos'}</h3>
+            <p>{search ? 'Prueba con otro nombre o SKU.' : 'Comienza creando tu primer producto'}</p>
+            {!search && (
+              <Button variant="primary" onClick={handleCreate}>
+                + Nuevo Producto
+              </Button>
+            )}
           </div>
         ) : (
           <>
             <div className={`${styles.resultsMeta} ${isStale ? styles.resultsStale : ''}`}>
-              <span>{products.length} de {total} productos</span>
+              <span>{skip} de {total} productos</span>
               {hasMore && (
                 <button
                   type="button"
                   className={styles.loadMoreSmall}
-                  onClick={fetchMoreProducts}
-                  disabled={loadingMore}
+                  onClick={loadMore}
+                  disabled={loadingMore || isSearching}
                 >
                   {loadingMore ? 'Cargando…' : 'Cargar más'}
                 </button>
@@ -588,11 +548,14 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
             {/* Mobile Cards View */}
             <div className={styles.productsGrid}>
               {products.map((product) => {
+                const isInactive = !product.isActive
                 const isLowStock = product.stock <= product.minStock
                 const isOutOfStock = product.stock === 0
                 let statusBadge
                 
-                if (isOutOfStock) {
+                if (isInactive) {
+                  statusBadge = <span className={`${styles.badge} ${styles.badgeWarning}`}><span className={styles.stockDot} style={{ background: '#6b7280' }} />Inactivo</span>
+                } else if (isOutOfStock) {
                   statusBadge = <span className={`${styles.badge} ${styles.badgeDanger}`}><span className={styles.stockDot} style={{ background: 'var(--stock-out)' }} />Agotado</span>
                 } else if (isLowStock) {
                   statusBadge = <span className={`${styles.badge} ${styles.badgeWarning}`}><span className={styles.stockDot} style={{ background: 'var(--stock-reorder)' }} />Reordenar</span>
@@ -675,6 +638,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                 </thead>
                 <tbody>
                   {products.map((product) => {
+                    const isInactive = !product.isActive
                     const isLowStock = product.stock <= product.minStock
                     const isOutOfStock = product.stock === 0
 
@@ -697,19 +661,25 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                         </td>
                         <td className={styles.minStockCell}>{product.minStock}</td>
                         <td className={styles.statusCell}>
-                          {isOutOfStock && (
+                          {isInactive && (
+                            <span className={`${styles.badge} ${styles.badgeWarning}`}>
+                              <span className={styles.stockDot} style={{ background: '#6b7280' }} />
+                              Inactivo
+                            </span>
+                          )}
+                          {isOutOfStock && !isInactive && (
                             <span className={`${styles.badge} ${styles.badgeDanger}`}>
                               <span className={styles.stockDot} style={{ background: 'var(--stock-out)' }} />
                               Agotado
                             </span>
                           )}
-                          {isLowStock && !isOutOfStock && (
+                          {isLowStock && !isOutOfStock && !isInactive && (
                             <span className={`${styles.badge} ${styles.badgeWarning}`}>
                               <span className={styles.stockDot} style={{ background: 'var(--stock-reorder)' }} />
                               Reordenar
                             </span>
                           )}
-                          {!isLowStock && (
+                          {!isLowStock && !isInactive && (
                             <span className={`${styles.badge} ${styles.badgeSuccess}`}>
                               <span className={styles.stockDot} style={{ background: 'var(--stock-available)' }} />
                               Disponible
@@ -747,8 +717,8 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
               <div className={styles.loadMoreRow}>
                 <button
                   className={styles.loadMoreBtn}
-                  onClick={fetchMoreProducts}
-                  disabled={loadingMore}
+                  onClick={loadMore}
+                  disabled={loadingMore || isSearching}
                 >
                   {loadingMore ? 'Cargando…' : 'Cargar más'}
                 </button>
@@ -847,11 +817,11 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                     </div>
                   )}
 
-                  {nameCheckLoading && normalizeName(formData.name).length >= 2 && (
+                  {nameCheckLoading && normalizeProductName(formData.name).length >= 2 && (
                     <div className={styles.suggestHint}>Buscando coincidencias…</div>
                   )}
 
-                  {!nameDuplicate && nameSuggestions.length > 0 && normalizeName(formData.name).length >= 2 && (
+                  {!nameDuplicate && nameSuggestions.length > 0 && normalizeProductName(formData.name).length >= 2 && (
                     <div className={styles.suggestBox}>
                       <div className={styles.suggestTitle}>Coincidencias</div>
                       <div className={styles.suggestList}>
