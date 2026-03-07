@@ -47,6 +47,8 @@ interface UseProductSearchOptions {
   debounceMs?: number
   /** Intervalo de deduplicación SWR en ms (default: 60000) */
   dedupingInterval?: number
+  /** Datos iniciales SSR para evitar un fetch duplicado al montar */
+  fallbackData?: SearchResponse
 }
 
 /* ── Fetcher con AbortController ───────────────────────── */
@@ -104,6 +106,7 @@ export function useProductSearch(
     inStockOnly = false,
     debounceMs = 300,
     dedupingInterval = 60_000,
+    fallbackData,
   } = options
 
   const debouncedQuery = useDebounce(rawQuery.trim(), debounceMs)
@@ -114,11 +117,13 @@ export function useProductSearch(
       const params = new URLSearchParams()
       if (query) params.append('search', query)
       if (activeOnly) params.append('isActive', 'true')
+      if (inStockOnly) params.append('inStockOnly', '1')
+      if (includePresentations) params.append('includePresentations', '1')
       params.append('limit', String(limit))
       params.append('offset', String(offset))
       return `/api/products?${params}`
     },
-    [activeOnly, limit]
+    [activeOnly, includePresentations, inStockOnly, limit]
   )
 
   const swrKey = buildUrl(debouncedQuery, 0)
@@ -130,10 +135,13 @@ export function useProductSearch(
     isValidating,
     mutate,
   } = useSWR<SearchResponse>(swrKey, searchFetcher, {
+    fallbackData,
     // ── Caché agresivo para LAN ──
     dedupingInterval,             // 1 min: misma búsqueda = 0ms desde RAM
     revalidateOnFocus: false,     // No revalidar al cambiar de pestaña
     revalidateOnReconnect: false, // No saturar al reconectar Wi-Fi
+    revalidateOnMount: fallbackData ? false : undefined,
+    revalidateIfStale: fallbackData ? false : true,
     keepPreviousData: true,       // Mantener datos anteriores (anti-parpadeo)
     errorRetryCount: 2,           // Pocos reintentos en red débil
     errorRetryInterval: 3000,     // Esperar 3s entre reintentos

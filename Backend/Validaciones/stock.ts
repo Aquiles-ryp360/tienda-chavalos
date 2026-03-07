@@ -42,12 +42,17 @@ export async function validateStock(
   items: StockValidationItem[]
 ): Promise<StockValidationResult> {
   const errors: StockValidationResult['errors'] = []
+  const productIds = [...new Set(items.map((item) => item.productId))]
+  const products = productIds.length
+    ? await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, name: true, stock: true, isActive: true, unit: true },
+      })
+    : []
+  const productsById = new Map(products.map((product) => [product.id, product]))
 
   for (const item of items) {
-    const product = await prisma.product.findUnique({
-      where: { id: item.productId },
-      select: { id: true, name: true, stock: true, isActive: true, unit: true },
-    })
+    const product = productsById.get(item.productId)
 
     if (!product) {
       errors.push({
@@ -104,27 +109,26 @@ export async function validateStock(
  * Obtener productos con stock bajo
  */
 export async function getLowStockProducts() {
-  const products = await prisma.product.findMany({
-    where: { isActive: true },
-    select: {
-      id: true,
-      sku: true,
-      name: true,
-      stock: true,
-      minStock: true,
-      unit: true,
-    },
+  const products = await prisma.$queryRaw<
+    Array<{
+      id: string
+      sku: string
+      name: string
+      stock: Prisma.Decimal
+      minStock: Prisma.Decimal
+      unit: string
+    }>
+  >`
+    SELECT id, sku, name, stock, "minStock", unit
+    FROM products
+    WHERE "isActive" = true
+      AND stock <= "minStock"
+    ORDER BY name ASC
+  `
+
+  return products.filter((product) => {
+    const stockN = toNumberStrict(product.stock)
+    const minN = toNumberStrict(product.minStock)
+    return !Number.isNaN(stockN) && !Number.isNaN(minN)
   })
-
-  return products.filter((p) => {
-    const stockN = toNumberStrict(p.stock)
-    const minN   = toNumberStrict(p.minStock)
-
-    if (Number.isNaN(stockN) || Number.isNaN(minN)) return false
-
-    // "Stock bajo" real: stock <= mínimo
-    return stockN <= minN
-  })
-
-
 }

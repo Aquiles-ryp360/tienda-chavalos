@@ -1,9 +1,7 @@
 import { redirect } from 'next/navigation'
 import { requireAuth } from '@/lib/auth-session'
 import { CajaView } from '@/ui/pages/caja/CajaView'
-import * as productsAPI from '@backend/API/products'
-
-const INITIAL_LIMIT = 20
+import { getInitialCajaProducts } from '@/lib/server-data'
 
 export default async function CajaPage() {
   let user
@@ -13,11 +11,7 @@ export default async function CajaPage() {
     redirect('/login')
   }
 
-  const { products } = await productsAPI.searchProducts({
-    isActive: true,
-    limit: INITIAL_LIMIT,
-    offset: 0,
-  })
+  const { products } = await getInitialCajaProducts()
 
   return <CajaView user={user} initialProducts={products} />
 }

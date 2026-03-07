@@ -30,6 +30,8 @@ export interface UpdateProductInput {
 export interface SearchProductsQuery {
   search?: string
   isActive?: boolean
+  inStockOnly?: boolean
+  includePresentations?: boolean
   limit?: number
   offset?: number
 }
@@ -49,6 +51,34 @@ export interface ProductWithPresentations extends Omit<Product, 'price' | 'stock
     isActive: boolean
   }>
 }
+
+const productBaseSelect = {
+  id: true,
+  sku: true,
+  name: true,
+  description: true,
+  unit: true,
+  price: true,
+  stock: true,
+  minStock: true,
+  isActive: true,
+} as const
+
+const productDetailSelect = {
+  ...productBaseSelect,
+  createdAt: true,
+  updatedAt: true,
+} as const
+
+const productPresentationSelect = {
+  id: true,
+  name: true,
+  unit: true,
+  factorToBase: true,
+  priceOverride: true,
+  isDefault: true,
+  isActive: true,
+} as const
 
 /**
  * Crear producto
@@ -103,18 +133,11 @@ export async function getProductById(
 ): Promise<ProductWithPresentations | null> {
   const product = await prisma.product.findUnique({
     where: { id },
-    include: {
+    select: {
+      ...productDetailSelect,
       presentations: {
         where: { isActive: true },
-        select: {
-          id: true,
-          name: true,
-          unit: true,
-          factorToBase: true,
-          priceOverride: true,
-          isDefault: true,
-          isActive: true,
-        },
+        select: productPresentationSelect,
       },
     },
   })
@@ -175,10 +198,14 @@ export async function getProductById(
  * Buscar productos con presentaciones
  */
 export async function searchProducts(query: SearchProductsQuery) {
-  const where: any = {}
+  const where: Prisma.ProductWhereInput = {}
 
   if (query.isActive !== undefined) {
     where.isActive = query.isActive
+  }
+
+  if (query.inStockOnly) {
+    where.stock = { gt: new Prisma.Decimal(0) }
   }
 
   if (query.search) {
@@ -188,78 +215,104 @@ export async function searchProducts(query: SearchProductsQuery) {
     ]
   }
 
-  const [products, total] = await Promise.all([
-    prisma.product.findMany({
-      where,
-      include: {
-        presentations: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            name: true,
-            unit: true,
-            factorToBase: true,
-            priceOverride: true,
-            isDefault: true,
-            isActive: true,
+  const includePresentations = query.includePresentations ?? false
+  const take = query.limit ?? 50
+  const skip = query.offset ?? 0
+
+  const productsPromise = includePresentations
+    ? prisma.product.findMany({
+        where,
+        select: {
+          ...productBaseSelect,
+          presentations: {
+            where: { isActive: true },
+            select: productPresentationSelect,
           },
         },
-      },
-      orderBy: { name: 'asc' },
-      take: query.limit ?? 50,
-      skip: query.offset ?? 0,
-    }),
+        orderBy: { name: 'asc' },
+        take,
+        skip,
+      })
+    : prisma.product.findMany({
+        where,
+        select: productBaseSelect,
+        orderBy: { name: 'asc' },
+        take,
+        skip,
+      })
+
+  const [products, total] = await Promise.all([
+    productsPromise,
     prisma.product.count({ where }),
   ])
 
-  const serialized = products.map((p) => ({
-    id: p.id,
-    sku: p.sku,
-    name: p.name,
-    description: p.description,
-    unit: p.unit,
-    price: Number(p.price),
-    stock: Number(p.stock),
-    minStock: Number(p.minStock),
-    isActive: p.isActive,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-    presentations: p.presentations.map((pres) => {
+  const serialized = products.map((product: any) => {
+    const result: {
+      id: string
+      sku: string
+      name: string
+      description: string | null
+      unit: ProductUnit
+      price: number
+      stock: number
+      minStock: number
+      isActive: boolean
+      presentations?: ProductWithPresentations['presentations']
+    } = {
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      description: product.description,
+      unit: product.unit,
+      price: Number(product.price),
+      stock: Number(product.stock),
+      minStock: Number(product.minStock),
+      isActive: product.isActive,
+    }
+
+    if (!includePresentations) {
+      return result
+    }
+
+    const presentations = (product.presentations || []).map((presentation: any) => {
       const computedUnitPrice =
-        pres.priceOverride !== null
-          ? Number(pres.priceOverride)
-          : Number(p.price) * Number(pres.factorToBase)
+        presentation.priceOverride !== null
+          ? Number(presentation.priceOverride)
+          : Number(product.price) * Number(presentation.factorToBase)
 
       return {
-        id: pres.id,
-        name: pres.name,
-        unit: pres.unit,
-        factorToBase: Number(pres.factorToBase),
-        priceOverride: pres.priceOverride ? Number(pres.priceOverride) : null,
+        id: presentation.id,
+        name: presentation.name,
+        unit: presentation.unit,
+        factorToBase: Number(presentation.factorToBase),
+        priceOverride:
+          presentation.priceOverride !== null
+            ? Number(presentation.priceOverride)
+            : null,
         computedUnitPrice,
-        isDefault: pres.isDefault,
-        isActive: pres.isActive,
+        isDefault: presentation.isDefault,
+        isActive: presentation.isActive,
       }
-    }),
-  })) as ProductWithPresentations[]
+    })
 
-  // Insertar presentación virtual (fallback) para productos sin presentaciones
-  for (const prod of serialized) {
-    if (!prod.presentations || prod.presentations.length === 0) {
-      prod.presentations = [
-        {
-          id: 'virtual-default',
-          name: prod.unit,
-          unit: prod.unit,
-          factorToBase: 1,
-          priceOverride: null,
-          computedUnitPrice: Number(prod.price) * 1,
-          isDefault: true,
-          isActive: true,
-        },
-      ]
-    }
-  }
+    result.presentations =
+      presentations.length > 0
+        ? presentations
+        : [
+            {
+              id: 'virtual-default',
+              name: result.unit,
+              unit: result.unit,
+              factorToBase: 1,
+              priceOverride: null,
+              computedUnitPrice: Number(result.price),
+              isDefault: true,
+              isActive: true,
+            },
+          ]
+
+    return result
+  })
 
   return { products: serialized, total }
 }
@@ -371,7 +424,10 @@ export async function createProductPresentation(input: {
     name: presentation.name,
     unit: presentation.unit,
     factorToBase: Number(presentation.factorToBase),
-    priceOverride: presentation.priceOverride ? Number(presentation.priceOverride) : null,
+    priceOverride:
+      presentation.priceOverride !== null
+        ? Number(presentation.priceOverride)
+        : null,
     isDefault: presentation.isDefault,
     isActive: presentation.isActive,
   }

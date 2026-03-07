@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as productsAPI from '@backend/API/products'
 import { ProductUnit } from '@web/lib/db'
 
@@ -40,6 +42,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       priceOverride: body.priceOverride,
       isDefault: body.isDefault,
     })
+
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(result, { status: 201 })
   } catch (error: any) {
@@ -84,6 +89,9 @@ export async function DELETE(
     }
 
     await productsAPI.deleteProductPresentation(body.presentationId)
+
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json({ success: true })
   } catch (error: any) {

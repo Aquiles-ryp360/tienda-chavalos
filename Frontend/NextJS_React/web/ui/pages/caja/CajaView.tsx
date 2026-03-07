@@ -96,7 +96,9 @@ interface Product {
   name: string
   price: number
   stock: number
+  minStock: number
   unit: string
+  isActive: boolean
   presentations?: ProductPresentation[]
 }
 
@@ -148,6 +150,10 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     inStockOnly: true,
     includePresentations: true,
     debounceMs: 300,
+    fallbackData: {
+      products: initialProducts,
+      total: initialProducts.length,
+    },
   })
 
   const [cart, setCart] = useState<CartItem[]>([])
@@ -268,8 +274,6 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
     value: 0,
     reason: ''
   })
-  const initialHydratedRef = useRef<boolean>(initialProducts.length > 0)
-
   // Hidratar carrito desde localStorage (permite mantener items entre recargas)
   useEffect(() => {
     try {

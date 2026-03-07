@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as priceChangesAPI from '@backend/API/price-changes'
 
 /**
@@ -80,6 +82,9 @@ export async function POST(request: NextRequest) {
       },
       user.id
     )
+
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(result, { status: 201 })
   } catch (error: any) {

@@ -54,11 +54,12 @@ interface VentasViewProps {
     fullName: string
     role: string
   }
+  initialSales?: Sale[]
 }
 
-export function VentasView({ user }: VentasViewProps) {
-  const [sales, setSales] = useState<Sale[]>([])
-  const [loading, setLoading] = useState(true)
+export function VentasView({ user, initialSales = [] }: VentasViewProps) {
+  const [sales, setSales] = useState<Sale[]>(initialSales)
+  const [loading, setLoading] = useState(initialSales.length === 0)
   const [selectedSale, setSelectedSale] = useState<SaleDetail | null>(null)
   const [showEditModal, setShowEditModal] = useState(false)
 
@@ -75,7 +76,10 @@ export function VentasView({ user }: VentasViewProps) {
   }
 
   useEffect(() => {
-    loadSales()
+    if (initialSales.length === 0) {
+      loadSales()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const loadSales = async () => {

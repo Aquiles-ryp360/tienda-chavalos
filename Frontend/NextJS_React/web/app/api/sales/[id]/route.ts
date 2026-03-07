@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as salesAPI from '@backend/API/sales'
 import { prisma } from '@/lib/prisma'
 import { CustomerDocType } from '@prisma/client'
@@ -81,6 +83,7 @@ export async function PATCH(
     // Validar que la venta existe
     const existingSale = await prisma.sale.findUnique({
       where: { id },
+      select: { id: true, userId: true },
     })
 
     if (!existingSale) {
@@ -257,9 +260,29 @@ if (body.customerDocType !== undefined) {
     const updatedSale = await prisma.sale.update({
       where: { id },
       data: updateData,
-      include: {
+      select: {
+        id: true,
+        saleNumber: true,
+        createdAt: true,
+        customerName: true,
+        customerDocType: true,
+        customerDocNumber: true,
+        customerAddress: true,
+        institutionName: true,
+        observations: true,
+        paymentMethod: true,
+        subtotal: true,
+        tax: true,
+        total: true,
         items: {
-          include: {
+          select: {
+            id: true,
+            soldUnit: true,
+            soldQty: true,
+            baseQty: true,
+            unitPrice: true,
+            unitPriceOverride: true,
+            subtotal: true,
             product: {
               select: {
                 sku: true,
@@ -277,13 +300,14 @@ if (body.customerDocType !== undefined) {
         },
         user: {
           select: {
-            id: true,
-            username: true,
             fullName: true,
           },
         },
       },
     })
+
+    revalidateTag(CACHE_TAGS.salesList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     // Serializar Decimals
     const serialized = {
@@ -296,7 +320,8 @@ if (body.customerDocType !== undefined) {
         soldQty: Number(item.soldQty),
         baseQty: Number(item.baseQty),
         unitPrice: Number(item.unitPrice),
-        unitPriceOverride: item.unitPriceOverride ? Number(item.unitPriceOverride) : null,
+        unitPriceOverride:
+          item.unitPriceOverride !== null ? Number(item.unitPriceOverride) : null,
         subtotal: Number(item.subtotal),
         presentation: item.presentation
           ? {

@@ -66,7 +66,13 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
     hasMore,
     skip,
     refresh,
-  } = useProductSearch(search, { limit: 30 })
+  } = useProductSearch(search, {
+    limit: 30,
+    fallbackData: {
+      products: initialProducts,
+      total: initialTotal,
+    },
+  })
 
   const [loadingMore, setLoadingMore] = useState<boolean>(false)
   const [showModal, setShowModal] = useState(false)

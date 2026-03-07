@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth, requireAdmin } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as productsAPI from '@backend/API/products'
 
 export const dynamic = 'force-dynamic'
@@ -15,6 +17,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search') || searchParams.get('q') || undefined
     const isActiveParam = searchParams.get('isActive')
+    const includePresentations = searchParams.get('includePresentations') === '1'
+    const inStockOnly = searchParams.get('inStockOnly') === '1'
     const limit = parseInt(
       searchParams.get('limit') ||
         searchParams.get('take') ||
@@ -37,6 +41,8 @@ export async function GET(request: NextRequest) {
     const result = await productsAPI.searchProducts({
       search,
       isActive,
+      inStockOnly,
+      includePresentations,
       limit,
       offset,
     })
@@ -91,6 +97,9 @@ export async function POST(request: NextRequest) {
       stock: parseFloat(body.stock),
       minStock: body.minStock ? parseFloat(body.minStock) : undefined,
     })
+
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(
       {

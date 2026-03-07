@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as salesAPI from '@backend/API/sales'
 
 /**
@@ -90,6 +92,10 @@ export async function POST(request: NextRequest) {
       forcePhysicalStock: body.forcePhysicalStock,
       overrideNote: body.overrideNote,
     })
+
+    revalidateTag(CACHE_TAGS.salesList)
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(sale, { status: 201 })
   } catch (error: any) {

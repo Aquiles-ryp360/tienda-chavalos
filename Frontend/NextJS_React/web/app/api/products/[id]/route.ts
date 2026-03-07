@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { requireAuth, requireAdmin } from '@/lib/auth-session'
+import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as productsAPI from '@backend/API/products'
 
 export const dynamic = 'force-dynamic'
@@ -54,6 +56,9 @@ export async function PATCH(
 
     const product = await productsAPI.updateProduct(id, body)
 
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
+
     return NextResponse.json(product)
   } catch (error: any) {
     console.error('Error en PATCH /api/products/[id]:', error)
@@ -70,6 +75,13 @@ export async function PATCH(
       return NextResponse.json(
         { error: 'Producto no encontrado' },
         { status: 404 }
+      )
+    }
+
+    if (error.code === 'DUPLICATE_PRODUCT_NAME') {
+      return NextResponse.json(
+        { error: 'Ya existe un producto con ese nombre', existing: error.existing },
+        { status: 409 }
       )
     }
 
@@ -92,6 +104,9 @@ export async function DELETE(
     const { id } = await params
 
     await productsAPI.deleteProduct(id)
+
+    revalidateTag(CACHE_TAGS.productsList)
+    revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json({ success: true })
   } catch (error: any) {
@@ -116,15 +131,5 @@ export async function DELETE(
       { error: 'Error al eliminar producto' },
       { status: 500 }
     )
-    
-        if (error.code === 'DUPLICATE_PRODUCT_NAME') {
-      return NextResponse.json(
-        { error: 'Ya existe un producto con ese nombre', existing: error.existing },
-        { status: 409 }
-      )
-    }
-
-
-
   }
 }

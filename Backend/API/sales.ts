@@ -82,6 +82,70 @@ export interface InsufficientStockError {
   presentationId?: string
 }
 
+const saleListSelect = {
+  id: true,
+  saleNumber: true,
+  createdAt: true,
+  customerName: true,
+  paymentMethod: true,
+  total: true,
+  user: {
+    select: {
+      fullName: true,
+    },
+  },
+} as const
+
+const saleDetailSelect = {
+  id: true,
+  saleNumber: true,
+  userId: true,
+  customerName: true,
+  customerDocType: true,
+  customerDocNumber: true,
+  customerAddress: true,
+  institutionName: true,
+  observations: true,
+  paymentMethod: true,
+  subtotal: true,
+  tax: true,
+  total: true,
+  stockOverride: true,
+  overrideNote: true,
+  createdAt: true,
+  items: {
+    select: {
+      id: true,
+      soldUnit: true,
+      soldQty: true,
+      baseQty: true,
+      unitPrice: true,
+      unitPriceOverride: true,
+      priceAdjustNote: true,
+      subtotal: true,
+      product: {
+        select: {
+          id: true,
+          sku: true,
+          name: true,
+          unit: true,
+        },
+      },
+      presentation: {
+        select: {
+          name: true,
+          factorToBase: true,
+        },
+      },
+    },
+  },
+  user: {
+    select: {
+      fullName: true,
+    },
+  },
+} as const
+
 /**
  * Determinar si una unidad permite decimales
  */
@@ -153,6 +217,36 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
   const lastNumber = lastSale ? parseInt(lastSale.saleNumber.split('-')[1]) : 0
   const saleNumber = `VTA-${String(lastNumber + 1).padStart(6, '0')}`
 
+  const productIds = [...new Set(input.items.map((item) => item.productId))]
+  const products = productIds.length
+    ? await prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: {
+          id: true,
+          name: true,
+          unit: true,
+          price: true,
+          stock: true,
+          presentations: {
+            where: { isActive: true },
+            select: {
+              id: true,
+              productId: true,
+              name: true,
+              unit: true,
+              factorToBase: true,
+              priceOverride: true,
+              isDefault: true,
+              isActive: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+          },
+        },
+      })
+    : []
+  const productsById = new Map(products.map((product) => [product.id, product]))
+
   // Preparar items con validación y cálculo de precios
   const processedItems: Array<{
     productId: string
@@ -181,14 +275,7 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
       }
     }
 
-    const product = await prisma.product.findUnique({
-      where: { id: item.productId },
-      include: {
-        presentations: {
-          where: { isActive: true },
-        },
-      },
-    })
+    const product = productsById.get(item.productId)
 
     if (!product) {
       throw new Error(`Producto ${item.productId} no encontrado`)
@@ -337,13 +424,24 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
       },
     })
 
+    const txProducts = productIds.length
+      ? await tx.product.findMany({
+          where: { id: { in: productIds } },
+          select: {
+            id: true,
+            stock: true,
+          },
+        })
+      : []
+    const txProductsById = new Map(
+      txProducts.map((product) => [product.id, { stock: product.stock }])
+    )
+
     // 2. Crear items y actualizar stock
     for (const processedItem of processedItems) {
-      const product = await tx.product.findUnique({
-        where: { id: processedItem.productId },
-      })
+      const productState = txProductsById.get(processedItem.productId)
 
-      if (!product) {
+      if (!productState) {
         throw new Error(`Producto ${processedItem.productId} no encontrado`)
       }
 
@@ -357,18 +455,20 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
           soldQty: processedItem.soldQty,
           baseQty: processedItem.baseQty,
           unitPrice: processedItem.unitPrice,
-          unitPriceOverride: processedItem.unitPriceOverride || null,
+          unitPriceOverride: processedItem.unitPriceOverride ?? null,
           priceAdjustNote: processedItem.priceAdjustNote || null,
           subtotal: processedItem.subtotal,
         },
       })
 
       // Actualizar stock (restar baseQty)
-      const newStock = product.stock.sub(processedItem.baseQty)
+      const previousStock = productState.stock
+      const newStock = previousStock.sub(processedItem.baseQty)
       await tx.product.update({
         where: { id: processedItem.productId },
         data: { stock: newStock },
       })
+      productState.stock = newStock
 
       // Crear movimiento de stock con nota si es override
       const notes = input.forcePhysicalStock
@@ -382,7 +482,7 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
           quantity: processedItem.baseQty,
           reference: saleNumber,
           notes,
-          previousStock: product.stock,
+          previousStock,
           newStock,
         },
       })
@@ -391,33 +491,7 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
     // 3. Retornar venta completa con detalles de presentaciones
     return await tx.sale.findUnique({
       where: { id: newSale.id },
-      include: {
-        items: {
-          include: {
-            product: {
-              select: {
-                id: true,
-                sku: true,
-                name: true,
-                unit: true,
-              },
-            },
-            presentation: {
-              select: {
-                name: true,
-                factorToBase: true,
-              },
-            },
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            username: true,
-            fullName: true,
-          },
-        },
-      },
+      select: saleDetailSelect,
     })
   })
 
@@ -430,33 +504,7 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
 export async function getSaleById(id: string): Promise<SaleWithDetails | null> {
   return await prisma.sale.findUnique({
     where: { id },
-    include: {
-      items: {
-        include: {
-          product: {
-            select: {
-              id: true,
-              sku: true,
-              name: true,
-              unit: true,
-            },
-          },
-          presentation: {
-            select: {
-              name: true,
-              factorToBase: true,
-            },
-          },
-        },
-      },
-      user: {
-        select: {
-          id: true,
-          username: true,
-          fullName: true,
-        },
-      },
-    },
+    select: saleDetailSelect,
   }) as SaleWithDetails | null
 }
 
@@ -485,33 +533,7 @@ export async function listSales(options: {
   const [sales, total] = await Promise.all([
     prisma.sale.findMany({
       where,
-      include: {
-        items: {
-          include: {
-            product: {
-              select: {
-                id: true,
-                sku: true,
-                name: true,
-                unit: true,
-              },
-            },
-            presentation: {
-              select: {
-                name: true,
-                factorToBase: true,
-              },
-            },
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            username: true,
-            fullName: true,
-          },
-        },
-      },
+      select: saleListSelect,
       orderBy: { createdAt: 'desc' },
       take: options.limit ?? 50,
       skip: options.offset ?? 0,
