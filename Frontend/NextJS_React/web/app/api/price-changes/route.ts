@@ -1,8 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import {
+  getErrorMessage,
+  parseNonEmptyString,
+  parseNumberLike,
+  readJsonObject,
+} from '@/lib/api-utils'
 import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as priceChangesAPI from '@backend/API/price-changes'
+
+const priceChangeTypes = new Set(['SUBIR', 'BAJAR'])
+const priceChangeModes = new Set(['PORCENTAJE', 'MONTO'])
+
+function isPriceChangeType(
+  value: unknown
+): value is priceChangesAPI.CreatePriceChangeInput['changeType'] {
+  return typeof value === 'string' && priceChangeTypes.has(value)
+}
+
+function isPriceChangeMode(
+  value: unknown
+): value is priceChangesAPI.CreatePriceChangeInput['changeMode'] {
+  return typeof value === 'string' && priceChangeModes.has(value)
+}
 
 /**
  * GET /api/price-changes - Obtener historial de cambios de precio
@@ -29,10 +50,10 @@ export async function GET(request: NextRequest) {
     })
 
     return NextResponse.json(result)
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error en GET /api/price-changes:', error)
 
-    if (error.message === 'No autenticado') {
+    if (getErrorMessage(error) === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
@@ -54,17 +75,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 403 })
     }
 
-    const body = await request.json()
+    const body = await readJsonObject(request)
+    const productId = parseNonEmptyString(body.productId)
+    const presentationId = parseNonEmptyString(body.presentationId)
+    const reason = parseNonEmptyString(body.reason)
+    const changeValue = parseNumberLike(body.changeValue)
 
-    // Validar campos requeridos
-    if (!body.productId || !body.changeType || !body.changeMode || !body.reason) {
+    if (
+      !productId ||
+      !isPriceChangeType(body.changeType) ||
+      !isPriceChangeMode(body.changeMode) ||
+      !reason
+    ) {
       return NextResponse.json(
         { error: 'Faltan campos requeridos' },
         { status: 400 }
       )
     }
 
-    if (typeof body.changeValue !== 'number' || body.changeValue <= 0) {
+    if (changeValue === undefined || changeValue <= 0) {
       return NextResponse.json(
         { error: 'El valor de cambio debe ser un número positivo' },
         { status: 400 }
@@ -73,12 +102,12 @@ export async function POST(request: NextRequest) {
 
     const result = await priceChangesAPI.createPriceChange(
       {
-        productId: body.productId,
-        presentationId: body.presentationId,
+        productId,
+        presentationId,
         changeType: body.changeType,
         changeMode: body.changeMode,
-        changeValue: body.changeValue,
-        reason: body.reason,
+        changeValue,
+        reason,
       },
       user.id
     )
@@ -87,15 +116,17 @@ export async function POST(request: NextRequest) {
     revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(result, { status: 201 })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error en POST /api/price-changes:', error)
 
-    if (error.message === 'No autenticado') {
+    const errorMessage = getErrorMessage(error)
+
+    if (errorMessage === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
-    if (error.message?.includes('no encontrado')) {
-      return NextResponse.json({ error: error.message }, { status: 404 })
+    if (errorMessage?.includes('no encontrado')) {
+      return NextResponse.json({ error: errorMessage }, { status: 404 })
     }
 
     return NextResponse.json(

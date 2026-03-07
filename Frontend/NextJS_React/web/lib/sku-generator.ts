@@ -109,9 +109,9 @@
           // Guardar cache
           skuCache.set(p, { value: next, ts: Date.now() })
           return next
-        } catch (error: any) {
+        } catch (error: unknown) {
           // Si fue abort, no ensuciar logs
-          if (error?.name !== 'AbortError') {
+          if (!(error instanceof Error && error.name === 'AbortError')) {
             console.error('Error fetching next SKU:', error)
           }
           return null

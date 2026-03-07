@@ -1,5 +1,5 @@
 import jsPDF from 'jspdf'
-import autoTable from 'jspdf-autotable'
+import autoTable, { type CellInput, type Table } from 'jspdf-autotable'
 import { formatMoneyPEN } from './format-money'
 
 /**
@@ -45,6 +45,12 @@ interface SaleData {
 interface PDFOptions {
   format?: 'A4' | 'TICKET'
 }
+
+interface AutoTableDocument extends jsPDF {
+  lastAutoTable?: Table
+}
+
+type TotalsRow = [CellInput, CellInput]
 
 /**
  * Helper: redondea a 2 decimales
@@ -100,6 +106,10 @@ function ensureSpace(doc: jsPDF, yPos: number, minSpace: number, topY = 18): num
     return topY
   }
   return yPos
+}
+
+function getLastAutoTableFinalY(doc: jsPDF): number {
+  return (doc as AutoTableDocument).lastAutoTable?.finalY ?? 0
 }
 
 /**
@@ -195,7 +205,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
     },
   })
 
-  yPos = (doc as any).lastAutoTable.finalY + 8
+  yPos = getLastAutoTableFinalY(doc) + 8
 
   // ==================== DATOS DEL CLIENTE ====================
   yPos = ensureSpace(doc, yPos, 30)
@@ -252,7 +262,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
     },
   })
 
-  yPos = (doc as any).lastAutoTable.finalY + 8
+  yPos = getLastAutoTableFinalY(doc) + 8
 
   // ==================== DETALLE ====================
   yPos = ensureSpace(doc, yPos, 30)
@@ -312,7 +322,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
     },
   })
 
-  yPos = (doc as any).lastAutoTable.finalY + 8
+  yPos = getLastAutoTableFinalY(doc) + 8
 
   // ==================== TOTALES (autoTable para que quede fino) ====================
   yPos = ensureSpace(doc, yPos, 26)
@@ -321,7 +331,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
   const totalsX = pageWidth - margin - totalsBoxWidth
 
   const taxNum = to2(num(sale.tax))
-  const rows: any[] = [
+  const rows: TotalsRow[] = [
     [
       { content: 'Subtotal:', styles: { fontStyle: 'normal' } },
       { content: formatMoneyPEN(to2(num(sale.subtotal))), styles: { halign: 'right' } },
@@ -353,7 +363,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
     didDrawPage: () => {},
   })
 
-  yPos = (doc as any).lastAutoTable.finalY + 8
+  yPos = getLastAutoTableFinalY(doc) + 8
 
   // ==================== OBSERVACIONES ====================
   const obs = (sale.observations ?? '').toString().trim()
@@ -383,7 +393,7 @@ function generateA4PDF(sale: SaleData): jsPDF {
       body: [[{ content: obs }]],
     })
 
-    yPos = (doc as any).lastAutoTable.finalY + 6
+    yPos = getLastAutoTableFinalY(doc) + 6
   }
 
   // ==================== PIE DE PÁGINA ====================

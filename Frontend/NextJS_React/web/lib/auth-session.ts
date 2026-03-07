@@ -9,7 +9,6 @@ export interface SessionUser {
 }
 
 const SESSION_COOKIE_NAME = 'ferre_session'
-const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production'
 
 /**
  * Crear sesión (guarda userId en cookie httpOnly)

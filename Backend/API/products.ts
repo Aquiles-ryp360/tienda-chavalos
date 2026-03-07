@@ -9,7 +9,7 @@ function normalizeProductName(name: string): string {
 export interface CreateProductInput {
   sku: string
   name: string
-  description?: string
+  description?: string | null
   unit: ProductUnit
   price: number
   stock: number
@@ -19,7 +19,7 @@ export interface CreateProductInput {
 export interface UpdateProductInput {
   sku?: string
   name?: string
-  description?: string
+  description?: string | null
   unit?: ProductUnit
   price?: number
   stock?: number

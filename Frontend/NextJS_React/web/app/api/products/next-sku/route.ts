@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/auth-session'
+import { getErrorMessage } from '@/lib/api-utils'
 import { prisma } from '@/lib/prisma'
 
 /**
@@ -55,8 +56,8 @@ export async function GET(request: NextRequest) {
     const nextSku = `${prefix}-${String(nextNumber).padStart(3, '0')}`
 
     return NextResponse.json({ nextSku })
-  } catch (error: any) {
-    if (error.message === 'No autenticado') {
+  } catch (error: unknown) {
+    if (getErrorMessage(error) === 'No autenticado') {
       return NextResponse.json(
         { error: 'No autenticado' },
         { status: 401 }

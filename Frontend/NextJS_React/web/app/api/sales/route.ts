@@ -1,8 +1,91 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import {
+  getErrorCode,
+  getErrorMessage,
+  parseBoolean,
+  parseJsonObjectArray,
+  parseNonEmptyString,
+  parseNumberLike,
+  readJsonObject,
+} from '@/lib/api-utils'
 import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as salesAPI from '@backend/API/sales'
+import type { CreateSaleInput, CreateSaleItem, InsufficientStockError } from '@backend/API/sales'
+import { PaymentMethod } from '@prisma/client'
+
+type ListedSale = Awaited<ReturnType<typeof salesAPI.listSales>>['sales'][number]
+type CreateSaleRequestBody = Pick<
+  CreateSaleInput,
+  'customerName' | 'paymentMethod' | 'forcePhysicalStock' | 'overrideNote'
+> & {
+  items: CreateSaleItem[]
+}
+
+const paymentMethods = new Set(Object.values(PaymentMethod))
+
+function isPaymentMethod(value: unknown): value is PaymentMethod {
+  return typeof value === 'string' && paymentMethods.has(value as PaymentMethod)
+}
+
+function serializeListedSale(sale: ListedSale) {
+  return {
+    ...sale,
+    total: Number(sale.total ?? 0),
+  }
+}
+
+function parseCreateSaleRequest(body: Record<string, unknown>): CreateSaleRequestBody | null {
+  if (!isPaymentMethod(body.paymentMethod)) {
+    return null
+  }
+
+  const itemObjects = parseJsonObjectArray(body.items)
+  if (!itemObjects || itemObjects.length === 0) {
+    return null
+  }
+
+  const items: CreateSaleItem[] = []
+
+  for (const item of itemObjects) {
+    const productId = parseNonEmptyString(item.productId)
+    const soldQty = parseNumberLike(item.soldQty)
+
+    if (!productId || soldQty === undefined) {
+      return null
+    }
+
+    items.push({
+      productId,
+      presentationId: parseNonEmptyString(item.presentationId),
+      soldQty,
+      unitPriceOverride: parseNumberLike(item.unitPriceOverride),
+      priceAdjustNote: parseNonEmptyString(item.priceAdjustNote),
+    })
+  }
+
+  return {
+    customerName: parseNonEmptyString(body.customerName),
+    paymentMethod: body.paymentMethod,
+    items,
+    forcePhysicalStock: parseBoolean(body.forcePhysicalStock),
+    overrideNote: parseNonEmptyString(body.overrideNote),
+  }
+}
+
+function isInsufficientStockError(error: unknown): error is InsufficientStockError {
+  if (typeof error !== 'object' || error === null) {
+    return false
+  }
+
+  return (
+    'code' in error &&
+    error.code === 'INSUFFICIENT_STOCK' &&
+    'productId' in error &&
+    typeof error.productId === 'string'
+  )
+}
 
 /**
  * GET /api/sales - Listar ventas
@@ -29,20 +112,14 @@ export async function GET(request: NextRequest) {
       offset,
     })
 
-    // Serializar Decimals a numbers
-    const serialized = {
+    return NextResponse.json({
       ...result,
-      sales: (result.sales || []).map((sale: any) => ({
-        ...sale,
-        total: Number(sale.total ?? 0),
-      })),
-    }
-
-    return NextResponse.json(serialized)
-  } catch (error: any) {
+      sales: result.sales.map(serializeListedSale),
+    })
+  } catch (error: unknown) {
     console.error('Error en GET /api/sales:', error)
 
-    if (error.message === 'No autenticado') {
+    if (getErrorMessage(error) === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
@@ -59,38 +136,31 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const user = await requireAuth()
-    const body = await request.json()
+    const body = await readJsonObject(request)
+    const input = parseCreateSaleRequest(body)
 
-    // Validar campos requeridos
-    if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
+    if (!input?.items.length) {
       return NextResponse.json(
         { error: 'Se requiere al menos un item' },
         { status: 400 }
       )
     }
 
-    if (!body.paymentMethod) {
+    if (!input) {
       return NextResponse.json(
         { error: 'Se requiere método de pago' },
         { status: 400 }
       )
     }
 
-    // Crear venta
     const sale = await salesAPI.createSale({
       userId: user.id,
       userRole: user.role,
-      customerName: body.customerName,
-      paymentMethod: body.paymentMethod,
-      items: body.items.map((item: any) => ({
-        productId: item.productId,
-        presentationId: item.presentationId,
-        soldQty: item.soldQty,
-        unitPriceOverride: item.unitPriceOverride,
-        priceAdjustNote: item.priceAdjustNote,
-      })),
-      forcePhysicalStock: body.forcePhysicalStock,
-      overrideNote: body.overrideNote,
+      customerName: input.customerName,
+      paymentMethod: input.paymentMethod,
+      items: input.items,
+      forcePhysicalStock: input.forcePhysicalStock,
+      overrideNote: input.overrideNote,
     })
 
     revalidateTag(CACHE_TAGS.salesList)
@@ -98,33 +168,34 @@ export async function POST(request: NextRequest) {
     revalidateTag(CACHE_TAGS.dashboardSummary)
 
     return NextResponse.json(sale, { status: 201 })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error en POST /api/sales:', error)
 
-    if (error.message === 'No autenticado') {
+    const errorMessage = getErrorMessage(error)
+    const errorCode = getErrorCode(error)
+
+    if (errorMessage === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
-    // Manejar error de permisos para forcePhysicalStock o ajuste de precio
-    if (error.message?.includes('Solo administrador') || error.code === 'FORBIDDEN') {
+    if (errorMessage?.includes('Solo administrador') || errorCode === 'FORBIDDEN') {
       return NextResponse.json(
-        { error: error.message || 'Permiso denegado' },
+        { error: errorMessage || 'Permiso denegado' },
         { status: 403 }
       )
     }
 
-    // Manejar error de stock insuficiente (nuevo formato)
-    if (error.code === 'INSUFFICIENT_STOCK') {
+    if (isInsufficientStockError(error)) {
       return NextResponse.json(error, { status: 409 })
     }
 
     if (
-      error.message?.includes('Stock insuficiente') ||
-      error.message?.includes('requiere') ||
-      error.message?.includes('Máximo')
+      errorMessage?.includes('Stock insuficiente') ||
+      errorMessage?.includes('requiere') ||
+      errorMessage?.includes('Máximo')
     ) {
       return NextResponse.json(
-        { error: error.message },
+        { error: errorMessage },
         { status: 400 }
       )
     }
@@ -135,4 +206,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-

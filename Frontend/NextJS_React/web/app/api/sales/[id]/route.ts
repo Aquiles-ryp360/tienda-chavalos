@@ -1,16 +1,74 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { getErrorMessage, readJsonObject } from '@/lib/api-utils'
 import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as salesAPI from '@backend/API/sales'
 import { prisma } from '@/lib/prisma'
-import { CustomerDocType } from '@prisma/client'
+import { CustomerDocType, Prisma } from '@prisma/client'
+
+type SaleDetail = NonNullable<Awaited<ReturnType<typeof salesAPI.getSaleById>>>
+type SaleDetailItem = SaleDetail['items'][number]
+
+type SerializedSaleDetail = Omit<SaleDetail, 'subtotal' | 'tax' | 'total' | 'items'> & {
+  subtotal: number
+  tax: number
+  total: number
+  items: Array<
+    Omit<
+      SaleDetailItem,
+      'soldQty' | 'baseQty' | 'unitPrice' | 'unitPriceOverride' | 'subtotal' | 'presentation'
+    > & {
+      soldQty: number
+      baseQty: number
+      unitPrice: number
+      unitPriceOverride: number | null
+      subtotal: number
+      presentation:
+        | {
+            name: string
+            factorToBase: number
+          }
+        | null
+    }
+  >
+}
+
+const customerDocTypes = new Set(Object.values(CustomerDocType))
+
+function isCustomerDocType(value: string): value is CustomerDocType {
+  return customerDocTypes.has(value as CustomerDocType)
+}
+
+function serializeSaleDetail(sale: SaleDetail): SerializedSaleDetail {
+  return {
+    ...sale,
+    subtotal: Number(sale.subtotal ?? 0),
+    tax: Number(sale.tax ?? 0),
+    total: Number(sale.total ?? 0),
+    items: sale.items.map((item) => ({
+      ...item,
+      soldQty: Number(item.soldQty ?? 0),
+      baseQty: Number(item.baseQty ?? 0),
+      unitPrice: Number(item.unitPrice ?? 0),
+      unitPriceOverride:
+        item.unitPriceOverride !== null ? Number(item.unitPriceOverride) : null,
+      subtotal: Number(item.subtotal ?? 0),
+      presentation: item.presentation
+        ? {
+            ...item.presentation,
+            factorToBase: Number(item.presentation.factorToBase ?? 0),
+          }
+        : null,
+    })),
+  }
+}
 
 /**
  * GET /api/sales/[id] - Obtener venta por ID
  */
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -26,38 +84,18 @@ export async function GET(
       )
     }
 
-    // CAJERO solo puede ver sus propias ventas
-    if (user.role === 'CAJERO' && (sale as any).userId !== user.id) {
+    if (user.role === 'CAJERO' && sale.userId !== user.id) {
       return NextResponse.json(
         { error: 'No autorizado para ver esta venta' },
         { status: 403 }
       )
     }
 
-    // Serializar Decimals a numbers
-    const serialized = {
-      ...sale,
-      subtotal: Number((sale as any).subtotal ?? 0),
-      tax: Number((sale as any).tax ?? 0),
-      total: Number((sale as any).total ?? 0),
-      items: (sale.items || []).map((item: any) => ({
-        ...item,
-        soldQty: Number(item.soldQty ?? 0),
-        baseQty: Number(item.baseQty ?? 0),
-        unitPrice: Number(item.unitPrice ?? 0),
-        subtotal: Number(item.subtotal ?? 0),
-        presentation: item.presentation ? {
-          ...item.presentation,
-          factorToBase: Number(item.presentation.factorToBase ?? 0),
-        } : undefined,
-      })),
-    }
-
-    return NextResponse.json(serialized)
-  } catch (error: any) {
+    return NextResponse.json(serializeSaleDetail(sale))
+  } catch (error: unknown) {
     console.error('Error en GET /api/sales/[id]:', error)
 
-    if (error.message === 'No autenticado') {
+    if (getErrorMessage(error) === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
@@ -78,12 +116,11 @@ export async function PATCH(
   try {
     const user = await requireAuth()
     const { id } = await params
-    const body = await request.json()
+    const body = await readJsonObject(request)
 
-    // Validar que la venta existe
     const existingSale = await prisma.sale.findUnique({
       where: { id },
-      select: { id: true, userId: true },
+      select: { id: true, userId: true, customerDocType: true },
     })
 
     if (!existingSale) {
@@ -93,7 +130,6 @@ export async function PATCH(
       )
     }
 
-    // CAJERO solo puede editar sus propias ventas
     if (user.role === 'CAJERO' && existingSale.userId !== user.id) {
       return NextResponse.json(
         { error: 'No autorizado para editar esta venta' },
@@ -101,10 +137,9 @@ export async function PATCH(
       )
     }
 
-    // Preparar datos a actualizar
-    const updateData: any = {}
+    const updateData: Prisma.SaleUpdateInput = {}
+    let nextCustomerDocType: CustomerDocType | null | undefined
 
-    // Validar y sanitizar customerName
     if (body.customerName !== undefined) {
       if (body.customerName === null || body.customerName === '') {
         updateData.customerName = null
@@ -120,39 +155,35 @@ export async function PATCH(
       }
     }
 
-    // Helper: normaliza strings
-const norm = (v: unknown) =>
-  typeof v === 'string' ? v.trim().toUpperCase() : v
+    if (body.customerDocType !== undefined) {
+      const rawDocType = body.customerDocType
 
-// Validar customerDocType
-if (body.customerDocType !== undefined) {
-  const raw = body.customerDocType
+      if (rawDocType === null || rawDocType === '') {
+        updateData.customerDocType = null
+        nextCustomerDocType = null
+      } else if (typeof rawDocType !== 'string') {
+        return NextResponse.json({ error: 'Tipo de documento inválido' }, { status: 400 })
+      } else {
+        let docType = rawDocType.trim().toUpperCase()
 
-  if (raw === null || raw === '') {
-    updateData.customerDocType = null
-  } else {
-    let docType = norm(raw)
+        if (docType === 'CEDULA') docType = 'DNI'
 
-    // Alias por compatibilidad (si antes usabas CEDULA)
-    if (docType === 'CEDULA') docType = 'DNI'
+        if (!isCustomerDocType(docType)) {
+          return NextResponse.json({ error: 'Tipo de documento inválido' }, { status: 400 })
+        }
 
-    // Aceptar solo valores válidos del enum/lista
-    if (Object.values(CustomerDocType).includes(docType as any)) {
-      updateData.customerDocType = docType as any
-    } else {
-      return NextResponse.json({ error: 'Tipo de documento inválido' }, { status: 400 })
+        updateData.customerDocType = docType
+        nextCustomerDocType = docType
+      }
     }
-  }
-}
 
-    // Validar customerDocNumber
     if (body.customerDocNumber !== undefined) {
-      const raw = body.customerDocNumber
+      const rawDocNumber = body.customerDocNumber
 
-      if (raw === null || raw === '') {
+      if (rawDocNumber === null || rawDocNumber === '') {
         updateData.customerDocNumber = null
       } else {
-        const docNumber = String(raw).trim()
+        const docNumber = String(rawDocNumber).trim()
 
         if (docNumber.length > 20) {
           return NextResponse.json(
@@ -161,46 +192,36 @@ if (body.customerDocType !== undefined) {
           )
         }
 
-        // Validación según tipo de documento (si se está enviando/ya existe)
-        const effectiveDocType =
-          (updateData.customerDocType ?? body.customerDocType ?? null)
-
-        const dt = effectiveDocType ? String(effectiveDocType).trim().toUpperCase() : null
+        const effectiveDocType = nextCustomerDocType ?? existingSale.customerDocType ?? null
         const digitsOnly = /^\d+$/.test(docNumber)
 
-        if (dt === 'DNI') {
+        if (effectiveDocType === 'DNI') {
           if (!digitsOnly || docNumber.length !== 8) {
             return NextResponse.json(
               { error: 'DNI inválido: debe tener exactamente 8 dígitos' },
               { status: 400 }
             )
           }
-        } else if (dt === 'RUC') {
+        } else if (effectiveDocType === 'RUC') {
           if (!digitsOnly || docNumber.length !== 11) {
             return NextResponse.json(
               { error: 'RUC inválido: debe tener exactamente 11 dígitos' },
               { status: 400 }
             )
           }
-        } else if (dt === 'PASAPORTE') {
-          // Pasaporte: alfanumérico, típico 6-12 (ajusta si deseas)
-          const ok = /^[A-Za-z0-9]{6,12}$/.test(docNumber)
-          if (!ok) {
+        } else if (effectiveDocType === 'PASAPORTE') {
+          if (!/^[A-Za-z0-9]{6,12}$/.test(docNumber)) {
             return NextResponse.json(
               { error: 'Pasaporte inválido: usa 6 a 12 caracteres alfanuméricos' },
               { status: 400 }
             )
           }
-        } else {
-          // OTRO o null: solo límite general ya aplicado
         }
 
         updateData.customerDocNumber = docNumber || null
       }
     }
 
-
-    // Validar customerAddress
     if (body.customerAddress !== undefined) {
       if (body.customerAddress === null || body.customerAddress === '') {
         updateData.customerAddress = null
@@ -216,7 +237,6 @@ if (body.customerDocType !== undefined) {
       }
     }
 
-    // Validar institutionName
     if (body.institutionName !== undefined) {
       if (body.institutionName === null || body.institutionName === '') {
         updateData.institutionName = null
@@ -232,23 +252,21 @@ if (body.customerDocType !== undefined) {
       }
     }
 
-    // Validar observations
     if (body.observations !== undefined) {
       if (body.observations === null || body.observations === '') {
         updateData.observations = null
       } else {
-        const obs = String(body.observations).trim()
-        if (obs.length > 1000) {
+        const observations = String(body.observations).trim()
+        if (observations.length > 1000) {
           return NextResponse.json(
             { error: 'Observaciones muy largas (máx 1000 caracteres)' },
             { status: 400 }
           )
         }
-        updateData.observations = obs || null
+        updateData.observations = observations || null
       }
     }
 
-    // Si no hay nada que actualizar
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json(
         { error: 'No hay datos para actualizar' },
@@ -256,14 +274,13 @@ if (body.customerDocType !== undefined) {
       )
     }
 
-    // Actualizar venta
     const updatedSale = await prisma.sale.update({
       where: { id },
       data: updateData,
       select: {
         id: true,
         saleNumber: true,
-        createdAt: true,
+        userId: true,
         customerName: true,
         customerDocType: true,
         customerDocNumber: true,
@@ -274,6 +291,10 @@ if (body.customerDocType !== undefined) {
         subtotal: true,
         tax: true,
         total: true,
+        stockOverride: true,
+        overrideNote: true,
+        createdAt: true,
+        updatedAt: true,
         items: {
           select: {
             id: true,
@@ -282,9 +303,11 @@ if (body.customerDocType !== undefined) {
             baseQty: true,
             unitPrice: true,
             unitPriceOverride: true,
+            priceAdjustNote: true,
             subtotal: true,
             product: {
               select: {
+                id: true,
                 sku: true,
                 name: true,
                 unit: true,
@@ -300,6 +323,8 @@ if (body.customerDocType !== undefined) {
         },
         user: {
           select: {
+            id: true,
+            username: true,
             fullName: true,
           },
         },
@@ -309,34 +334,11 @@ if (body.customerDocType !== undefined) {
     revalidateTag(CACHE_TAGS.salesList)
     revalidateTag(CACHE_TAGS.dashboardSummary)
 
-    // Serializar Decimals
-    const serialized = {
-      ...updatedSale,
-      subtotal: Number(updatedSale.subtotal),
-      tax: Number(updatedSale.tax),
-      total: Number(updatedSale.total),
-      items: updatedSale.items.map((item) => ({
-        ...item,
-        soldQty: Number(item.soldQty),
-        baseQty: Number(item.baseQty),
-        unitPrice: Number(item.unitPrice),
-        unitPriceOverride:
-          item.unitPriceOverride !== null ? Number(item.unitPriceOverride) : null,
-        subtotal: Number(item.subtotal),
-        presentation: item.presentation
-          ? {
-              ...item.presentation,
-              factorToBase: Number(item.presentation.factorToBase),
-            }
-          : null,
-      })),
-    }
-
-    return NextResponse.json(serialized)
-  } catch (error: any) {
+    return NextResponse.json(serializeSaleDetail(updatedSale))
+  } catch (error: unknown) {
     console.error('Error en PATCH /api/sales/[id]:', error)
 
-    if (error.message === 'No autenticado') {
+    if (getErrorMessage(error) === 'No autenticado') {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
