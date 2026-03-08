@@ -1,6 +1,7 @@
 import { unstable_cache } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { CACHE_TAGS } from '@/lib/cache-tags'
+import { getBusinessDayKey, getBusinessDayRange } from '@/lib/business-time'
 import * as productsAPI from '@backend/API/products'
 import { getLowStockProducts } from '@backend/Validaciones/stock'
 
@@ -39,7 +40,7 @@ const getInitialCajaProductsCached = unstable_cache(
 
 const getDashboardSummaryCached = unstable_cache(
   async (dayKey: string) => {
-    const startOfDay = new Date(`${dayKey}T00:00:00`)
+    const { start, endExclusive } = getBusinessDayRange(dayKey)
 
     const [productsCount, lowStockProducts, salesSummary] = await Promise.all([
       prisma.product.count({ where: { isActive: true } }),
@@ -47,7 +48,8 @@ const getDashboardSummaryCached = unstable_cache(
       prisma.sale.aggregate({
         where: {
           createdAt: {
-            gte: startOfDay,
+            gte: start,
+            lt: endExclusive,
           },
         },
         _count: {
@@ -84,13 +86,6 @@ const getDashboardSummaryCached = unstable_cache(
   }
 )
 
-function getTodayKey(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
 export async function getInitialAdminProducts() {
   return getInitialAdminProductsCached()
 }
@@ -100,5 +95,5 @@ export async function getInitialCajaProducts() {
 }
 
 export async function getDashboardSummary() {
-  return getDashboardSummaryCached(getTodayKey(new Date()))
+  return getDashboardSummaryCached(getBusinessDayKey(new Date()))
 }

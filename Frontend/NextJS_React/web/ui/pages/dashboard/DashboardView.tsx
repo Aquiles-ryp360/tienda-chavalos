@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { Header } from '@/ui/components/Header'
 import { BottomNav } from '@/ui/components/BottomNav'
+import { getBusinessDayKey } from '@/lib/business-time'
 import { formatMoneyPEN } from '@/lib/format-money'
 import styles from './dashboard.module.css'
 
@@ -139,7 +140,7 @@ export function DashboardView({ user, data }: DashboardViewProps) {
   }
 
   const handleNavigateToTodaySales = () => {
-    const today = new Date().toISOString().split('T')[0]
+    const today = getBusinessDayKey(new Date())
     router.push(`/ventas?date=${today}`)
   }
 

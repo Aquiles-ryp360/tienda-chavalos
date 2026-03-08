@@ -6,9 +6,33 @@ import { BottomNav } from '@/ui/components/BottomNav'
 import { Button } from '@/ui/components/Button'
 import { ReceiptPreview } from '@/ui/components/ReceiptPreview'
 import { EditReceiptModal } from '@/ui/components/EditReceiptModal'
+import { BUSINESS_TIME_ZONE } from '@/lib/business-time'
 import { generateSalePDF } from '@/lib/pdf-generator'
 import { formatMoneyPEN } from '@/lib/format-money'
 import styles from './ventas.module.css'
+
+function formatSaleDate(value: string) {
+  return new Date(value).toLocaleDateString('es-PE', {
+    timeZone: BUSINESS_TIME_ZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  })
+}
+
+function formatSaleTime(value: string) {
+  return new Date(value).toLocaleTimeString('es-PE', {
+    timeZone: BUSINESS_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatSaleDateTime(value: string) {
+  return new Date(value).toLocaleString('es-PE', {
+    timeZone: BUSINESS_TIME_ZONE,
+  })
+}
 
 interface Sale {
   id: string
@@ -195,16 +219,9 @@ export function VentasView({ user, initialSales = [] }: VentasViewProps) {
                   <div className={styles.saleCardHeader}>
                     <div className={styles.saleNumber}>{sale.saleNumber}</div>
                     <div className={styles.saleDate}>
-                      {new Date(sale.createdAt).toLocaleDateString('es-NI', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric'
-                      })}
+                      {formatSaleDate(sale.createdAt)}
                       <br />
-                      {new Date(sale.createdAt).toLocaleTimeString('es-NI', {
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
+                      {formatSaleTime(sale.createdAt)}
                     </div>
                   </div>
                   
@@ -250,7 +267,7 @@ export function VentasView({ user, initialSales = [] }: VentasViewProps) {
                     <tr key={sale.id}>
                       <td>{sale.saleNumber}</td>
                       <td>
-                        {new Date(sale.createdAt).toLocaleString('es-NI')}
+                        {formatSaleDateTime(sale.createdAt)}
                       </td>
                       <td>{sale.customerName || '-'}</td>
                       <td>{sale.paymentMethod}</td>
@@ -297,7 +314,7 @@ export function VentasView({ user, initialSales = [] }: VentasViewProps) {
                 <div className={styles.detailItem}>
                   <span className={styles.detailLabel}>Fecha</span>
                   <span className={styles.detailValue}>
-                    {new Date(selectedSale.createdAt).toLocaleString('es-NI')}
+                    {formatSaleDateTime(selectedSale.createdAt)}
                   </span>
                 </div>
 

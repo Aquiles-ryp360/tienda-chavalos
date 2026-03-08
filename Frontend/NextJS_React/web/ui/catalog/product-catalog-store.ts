@@ -19,6 +19,12 @@ interface PersistedCatalogState {
   lastSyncCompletedAt: number | null
 }
 
+interface ProductCatalogSaleItem {
+  productId: string
+  soldQty: number
+  factorToBase?: number
+}
+
 export interface ProductCatalogState {
   products: CatalogProduct[]
   isHydrated: boolean
@@ -75,6 +81,11 @@ function normalizeProducts(products: CatalogProduct[]) {
       computedUnitPrice: Number(presentation.computedUnitPrice ?? 0),
     })),
   }))
+}
+
+function roundCatalogNumber(value: number, decimals: number = 3) {
+  const factor = Math.pow(10, decimals)
+  return Math.round((value + Number.EPSILON) * factor) / factor
 }
 
 function mergeProducts(current: CatalogProduct[], incoming: CatalogProduct[]) {
@@ -229,6 +240,62 @@ export function mergeIntoProductCatalog(products: CatalogProduct[]) {
         products: mergedProducts,
         syncedCount: Math.max(current.syncedCount, mergedProducts.length),
         totalExpected: Math.max(current.totalExpected ?? 0, mergedProducts.length),
+        version: current.version + 1,
+      }
+    },
+    { persist: true }
+  )
+}
+
+export function applySaleToProductCatalog(items: ProductCatalogSaleItem[]) {
+  if (!items.length) return
+
+  const stockDeltaByProduct = new Map<string, number>()
+
+  for (const item of items) {
+    const soldQty = Number(item.soldQty)
+    const factorToBase = Number(item.factorToBase ?? 1)
+
+    if (!item.productId || !Number.isFinite(soldQty) || soldQty <= 0) continue
+    if (!Number.isFinite(factorToBase) || factorToBase <= 0) continue
+
+    const baseQty = roundCatalogNumber(soldQty * factorToBase, 3)
+    const currentDelta = stockDeltaByProduct.get(item.productId) ?? 0
+    stockDeltaByProduct.set(
+      item.productId,
+      roundCatalogNumber(currentDelta + baseQty, 3)
+    )
+  }
+
+  if (stockDeltaByProduct.size === 0) return
+
+  updateState(
+    (current) => {
+      if (current.products.length === 0) return current
+
+      let changed = false
+      const nextProducts = current.products.map((product) => {
+        const delta = stockDeltaByProduct.get(product.id)
+        if (delta === undefined) return product
+
+        const currentStock = Number(product.stock ?? 0)
+        if (!Number.isFinite(currentStock)) return product
+
+        const nextStock = roundCatalogNumber(currentStock - delta, 3)
+        if (nextStock === currentStock) return product
+
+        changed = true
+        return {
+          ...product,
+          stock: nextStock,
+        }
+      })
+
+      if (!changed) return current
+
+      return {
+        ...current,
+        products: nextProducts,
         version: current.version + 1,
       }
     },

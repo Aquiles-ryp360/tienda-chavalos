@@ -2,6 +2,8 @@ import { prisma } from '@web/lib/prisma'
 import type { Sale, ProductPresentation } from '@web/lib/db'
 import { PaymentMethod, StockMovementType, ProductUnit, Prisma, UserRole } from '@web/lib/db'
 
+const QUANTITY_EPSILON = 1e-9
+
 /**
  * Convertir Prisma.Decimal (o any) a number de forma estricta
  * Maneja strings, números, Decimals y formatos con comas
@@ -189,6 +191,41 @@ function validateQuantity(qty: number, unit: ProductUnit): { valid: boolean; err
   return { valid: true }
 }
 
+function roundToNumber(value: number, decimals: number = 3): number {
+  const factor = Math.pow(10, decimals)
+  return Math.round((value + Number.EPSILON) * factor) / factor
+}
+
+function sanitizeQuantity(
+  qty: number,
+  unit: ProductUnit
+): { valid: true; sanitizedQty: number } | { valid: false; error: string } {
+  const validation = validateQuantity(qty, unit)
+  if (validation.valid) {
+    return {
+      valid: true,
+      sanitizedQty: unitAllowsDecimals(unit) ? roundToNumber(qty, 3) : Math.round(qty),
+    }
+  }
+
+  if (!unitAllowsDecimals(unit)) {
+    const rounded = Math.round(qty)
+    if (Math.abs(qty - rounded) <= QUANTITY_EPSILON) {
+      return { valid: true, sanitizedQty: rounded }
+    }
+  } else {
+    const rounded = roundToNumber(qty, 3)
+    if (Math.abs(qty - rounded) <= QUANTITY_EPSILON) {
+      return { valid: true, sanitizedQty: rounded }
+    }
+  }
+
+  return {
+    valid: false,
+    error: validation.error ?? 'Cantidad inválida',
+  }
+}
+
 /**
  * Redondear Decimal a N lugares
  */
@@ -315,13 +352,15 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
     const pres = presentation!
 
     // Validar cantidad según unidad
-    const qtyValidation = validateQuantity(item.soldQty, pres.unit)
+    const qtyValidation = sanitizeQuantity(item.soldQty, pres.unit)
     if (!qtyValidation.valid) {
       throw new Error(`${product.name}: ${qtyValidation.error}`)
     }
 
+    const sanitizedSoldQty = qtyValidation.sanitizedQty
+
     // Calcular baseQty redondeando a 3 decimales
-    const soldQtyDecimal = new Prisma.Decimal(item.soldQty)
+    const soldQtyDecimal = roundDecimal(sanitizedSoldQty, 3)
     const baseQty = roundDecimal(Number(soldQtyDecimal) * Number(pres.factorToBase), 3)
 
     // Validar stock en unidad base (conversión numérica estricta para evitar comparación lexicográfica)
@@ -358,7 +397,7 @@ export async function createSale(input: CreateSaleInput): Promise<SaleWithDetail
           productName: product.name,
           available: availableN,
           requiredBaseQty: requiredN,
-          soldQty: item.soldQty,
+          soldQty: sanitizedSoldQty,
           unitBase: product.unit,
           presentationId: pres.id === 'tmp' ? undefined : pres.id,
         } as InsufficientStockError

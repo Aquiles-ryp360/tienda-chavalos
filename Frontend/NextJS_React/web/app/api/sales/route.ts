@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
 import { requireAuth } from '@/lib/auth-session'
+import { parseBusinessDateFilter } from '@/lib/business-time'
 import {
   getErrorCode,
   getErrorMessage,
@@ -97,12 +98,21 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
-    const startDate = searchParams.get('startDate')
-      ? new Date(searchParams.get('startDate')!)
+    const startDateParam = searchParams.get('startDate')
+    const endDateParam = searchParams.get('endDate')
+    const startDate = startDateParam
+      ? parseBusinessDateFilter(startDateParam, 'start') ?? undefined
       : undefined
-    const endDate = searchParams.get('endDate')
-      ? new Date(searchParams.get('endDate')!)
+    const endDate = endDateParam
+      ? parseBusinessDateFilter(endDateParam, 'end') ?? undefined
       : undefined
+
+    if ((startDateParam && !startDate) || (endDateParam && !endDate)) {
+      return NextResponse.json(
+        { error: 'Rango de fechas inválido' },
+        { status: 400 }
+      )
+    }
 
     const result = await salesAPI.listSales({
       userId: user.role === 'CAJERO' ? user.id : undefined,

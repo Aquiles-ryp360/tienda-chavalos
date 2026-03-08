@@ -16,12 +16,14 @@ import type {
   CatalogProduct as Product,
   CatalogProductPresentation as ProductPresentation,
 } from '@/ui/catalog/product-catalog.types'
+import { applySaleToProductCatalog } from '@/ui/catalog/product-catalog-store'
 import { useBackgroundCatalogSync } from '@/ui/hooks/useBackgroundCatalogSync'
 import { useSmartProductSearch } from '@/ui/hooks/useSmartProductSearch'
 import styles from './caja.module.css'
 
 // Unidades que permiten decimales (consistente con backend)
 const FRACTIONABLE_UNITS = new Set(['KILO', 'LITRO', 'METRO', 'CAJA', 'PAQUETE', 'ROLLO'])
+const QUANTITY_EPSILON = 1e-9
 
 // Determinar si una unidad permite decimales
 function unitAllowsDecimals(unit: string): boolean {
@@ -36,6 +38,18 @@ function getStep(unit: string): number {
 // Redondear de forma segura a 3 decimales para evitar errores de punto flotante
 function roundTo3Decimals(num: number): number {
   return Math.round((num + Number.EPSILON) * 1000) / 1000
+}
+
+function sanitizeSaleQuantity(qty: number, unit: string): number | null {
+  if (!Number.isFinite(qty) || qty <= 0) return null
+
+  if (!unitAllowsDecimals(unit)) {
+    const rounded = Math.round(qty)
+    return Math.abs(qty - rounded) <= QUANTITY_EPSILON ? rounded : null
+  }
+
+  const rounded = roundTo3Decimals(qty)
+  return rounded > 0 ? rounded : null
 }
 
 // Normalizar cantidades: permite opcionalmente mantener decimales sin forzar múltiplos de step
@@ -117,6 +131,15 @@ interface CajaViewProps {
   initialProducts?: Product[]
 }
 
+interface PreparedSaleItem {
+  productId: string
+  presentationId: string | null
+  soldQty: number
+  unitPriceOverride?: number
+  priceAdjustNote?: string
+  factorToBase: number
+}
+
 export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const { notify } = useToast()
   const [search, setSearch] = useState('')
@@ -149,7 +172,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const [cart, setCart] = useState<CartItem[]>([])
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodUi>('EFECTIVO')
-  const [loading, setLoading] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [insufficientStockError, setInsufficientStockError] = useState<InsufficientStockError | null>(null)
   const [overrideNote, setOverrideNote] = useState('')
   const [cartOpen, setCartOpen] = useState(false) // Estado para abrir/cerrar carrito en móvil
@@ -164,6 +187,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   const [dynamicPadding, setDynamicPadding] = useState(0)
   const [isMounted, setIsMounted] = useState(false)
   const floatingCartBtnRef = useRef<HTMLButtonElement | null>(null)
+  const submitLockRef = useRef(false)
 
   // Marca el montaje en cliente para habilitar mediciones de DOM sin mismatch SSR/CSR.
   useEffect(() => {
@@ -419,6 +443,46 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       item.presentationUnit ||
       'UNIDAD'
     )
+  }
+
+  const buildPreparedSaleItems = (): PreparedSaleItem[] | null => {
+    const preparedItems: PreparedSaleItem[] = []
+
+    for (const item of cart) {
+      const effectivePresentation = getEffectivePresentation(item)
+      const effectiveUnit = getEffectiveUnit(item)
+      const soldQty = sanitizeSaleQuantity(item.soldQty, effectiveUnit)
+
+      if (soldQty === null) {
+        notify({
+          type: 'warning',
+          title: 'Cantidad inválida',
+          message: `${item.product.name} requiere una cantidad válida para ${effectiveUnit}`,
+        })
+        return null
+      }
+
+      const factorToBase = Number(effectivePresentation?.factorToBase ?? 1)
+      if (!Number.isFinite(factorToBase) || factorToBase <= 0) {
+        notify({
+          type: 'error',
+          title: 'Presentación inválida',
+          message: `No se pudo calcular la conversión de ${item.product.name}`,
+        })
+        return null
+      }
+
+      preparedItems.push({
+        productId: item.product.id,
+        presentationId: item.presentationId,
+        soldQty,
+        unitPriceOverride: item.adjustedUnitPrice,
+        priceAdjustNote: item.priceAdjustNote,
+        factorToBase,
+      })
+    }
+
+    return preparedItems
   }
 
   const addToCart = (product: Product) => {
@@ -719,13 +783,19 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
   }
 
   const handleCheckout = async (forcePhysicalStock: boolean = false) => {
-    if (loading) return
+    if (submitLockRef.current) return
     if (cart.length === 0) {
       notify({ type: 'warning', title: 'Carrito vacío', message: 'Agrega productos antes de finalizar' })
       return
     }
 
-    setLoading(true)
+    const preparedItems = buildPreparedSaleItems()
+    if (!preparedItems?.length) {
+      return
+    }
+
+    submitLockRef.current = true
+    setIsSubmitting(true)
 
     try {
       const res = await fetch('/api/sales', {
@@ -738,11 +808,11 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
             paymentMethod === 'TRANSFERENCIA' || paymentMethod === 'TARJETA'
               ? 'TRANSFERENCIA'
               : 'EFECTIVO', // backend enum no soporta YAPE/TARJETA; se normaliza
-          items: cart.map((item) => ({
-            productId: item.product.id,
+          items: preparedItems.map((item) => ({
+            productId: item.productId,
             presentationId: item.presentationId,
             soldQty: item.soldQty,
-            unitPriceOverride: item.adjustedUnitPrice,
+            unitPriceOverride: item.unitPriceOverride,
             priceAdjustNote: item.priceAdjustNote,
           })),
           forcePhysicalStock,
@@ -770,6 +840,14 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
         return
       }
 
+      applySaleToProductCatalog(
+        preparedItems.map((item) => ({
+          productId: item.productId,
+          soldQty: item.soldQty,
+          factorToBase: item.factorToBase,
+        }))
+      )
+
       notify({ type: 'success', title: '¡Venta creada!', message: `Venta ${data.saleNumber} registrada exitosamente` })
       setCart([])
       setCustomerName('')
@@ -782,7 +860,8 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
       console.error('Error en checkout:', error)
       notify({ type: 'error', title: 'Error al procesar', message: 'No se pudo completar la venta' })
     } finally {
-      setLoading(false)
+      submitLockRef.current = false
+      setIsSubmitting(false)
     }
   }
 
@@ -942,11 +1021,11 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
 
       <Button
         variant="success"
-        disabled={loading || cart.length === 0}
+        disabled={isSubmitting || cart.length === 0}
         onClick={() => handleCheckout(false)}
         className={styles.btnCheckout}
       >
-        {loading ? 'Procesando...' : `COBRAR ${formatMoneyPEN(total)}`}
+        {isSubmitting ? 'Procesando...' : `COBRAR ${formatMoneyPEN(total)}`}
       </Button>
     </div>
   )
@@ -1013,7 +1092,11 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                 Cancelar
               </Button>
               {user.role === 'ADMIN' && (
-                <Button variant="success" onClick={() => handleCheckout(true)}>
+                <Button
+                  variant="success"
+                  disabled={isSubmitting}
+                  onClick={() => handleCheckout(true)}
+                >
                   Confirmar Venta (Stock Físico)
                 </Button>
               )}
@@ -1353,7 +1436,7 @@ export function CajaView({ user, initialProducts = [] }: CajaViewProps) {
                         type="button"
                         className={styles.btnGoToPay}
                         onClick={() => setCartStep('payment')}
-                        disabled={loading || cart.length === 0}
+                        disabled={isSubmitting || cart.length === 0}
                       >
                         Siguiente: Pagar
                       </button>
