@@ -2,7 +2,6 @@
 
 import { useState, FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { signIn } from 'next-auth/react'
 import { Button } from '@/ui/components/Button'
 import styles from './login.module.css'
 
@@ -45,11 +44,11 @@ export function LoginView() {
     }
   }
 
-  const handleGoogle = async () => {
+  const handleGoogle = () => {
     setGoogleLoading(true)
     setError('')
-    await signIn('google', { callbackUrl: '/dashboard' })
-    setGoogleLoading(false)
+    // Redirección directa al endpoint de OAuth — no requiere SessionProvider
+    window.location.href = '/api/auth/signin/google?callbackUrl=%2Fdashboard'
   }
 
   return (

@@ -3,7 +3,6 @@ import '@/styles/globals.css'
 import { ToastProvider } from '@/ui/components/Toast/ToastContext'
 import { ToastContainer } from '@/ui/components/Toast/ToastContainer'
 import { IdleRedirectProvider } from '@/ui/components/IdleRedirectProvider'
-import { Providers } from '@/app/Providers'
 
 export const metadata: Metadata = {
   title: 'Ferretería Chavalos',
@@ -25,14 +24,12 @@ export default function RootLayout({
   return (
     <html lang="es">
       <body>
-        <Providers>
-          <ToastProvider>
-            <IdleRedirectProvider>
-              {children}
-              <ToastContainer />
-            </IdleRedirectProvider>
-          </ToastProvider>
-        </Providers>
+        <ToastProvider>
+          <IdleRedirectProvider>
+            {children}
+            <ToastContainer />
+          </IdleRedirectProvider>
+        </ToastProvider>
       </body>
     </html>
   )
