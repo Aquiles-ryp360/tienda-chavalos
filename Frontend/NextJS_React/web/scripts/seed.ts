@@ -17,8 +17,10 @@ async function main() {
   console.log('✅ Base de datos limpia')
 
   // Crear usuarios
-  const adminPassword = await bcrypt.hash('admin123', 10)
-  const cajeroPassword = await bcrypt.hash('cajero123', 10)
+  // ⚠️  No usar contraseñas hardcodeadas. En desarrollo se usa un valor por defecto SOLO para seed local.
+  // En producción: pasar SEED_ADMIN_PASS y SEED_CAJERO_PASS como variables de entorno.
+  const adminPassword = await bcrypt.hash(process.env.SEED_ADMIN_PASS ?? 'admin_dev_local', 12)
+  const cajeroPassword = await bcrypt.hash(process.env.SEED_CAJERO_PASS ?? 'cajero_dev_local', 12)
 
   const admin = await prisma.user.create({
     data: {

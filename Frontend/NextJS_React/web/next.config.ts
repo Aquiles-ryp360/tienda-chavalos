@@ -1,15 +1,11 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  output: 'standalone',
-
-  // ── Rendimiento agresivo ──────────────────────────────────
+  // output: 'standalone' — SOLO para Docker/LAN. En Vercel se comenta/elimina.
+  // Para volver al modo LAN: descomentar esta línea y hacer build manual.
+  // output: 'standalone',
   compress: true,            // Gzip/Brotli automático en el servidor standalone
   poweredByHeader: false,    // Elimina cabecera "X-Powered-By" (ahorra bytes)
-
-  experimental: {
-    externalDir: true,
-  },
 
   // ── Optimización de imágenes ──────────────────────────────
   images: {
@@ -22,9 +18,45 @@ const nextConfig: NextConfig = {
   // Permitir acceso desde cualquier host (LAN: IPs, hostnames, móviles)
   allowedDevOrigins: ['localhost', '127.0.0.1', '*.local'],
 
-  // ── Cabeceras de caché agresivas ──────────────────────────
+  // ── Cabeceras de seguridad y caché ──────────────────────────────────────
   async headers() {
     return [
+      // —— Security Headers (aplica a todas las rutas) —————————————————
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: [
+              "default-src 'self'",
+              // 'unsafe-inline' requerido por Next.js App Router (estilos inline en RSC).
+              // Para producción con HTTPS agregar 'nonce-{nonce}' y eliminar unsafe-inline.
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob:",
+              "font-src 'self'",
+              "connect-src 'self'",
+              "media-src 'none'",
+              "object-src 'none'",
+              "frame-ancestors 'none'",      // Previene clickjacking
+              "base-uri 'self'",
+              "form-action 'self'",
+              'upgrade-insecure-requests',
+            ].join('; '),
+          },
+          // Previene clickjacking (doble protección con frame-ancestors)
+          { key: 'X-Frame-Options', value: 'DENY' },
+          // Previene MIME type sniffing
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          // No filtrar información del referrer a dominios externos
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          // Deshabilitar APIs sensibles del navegador innecesarias
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+          // Forzar HTTPS por 1 año cuando se active (habilitar al poner HTTPS)
+          // { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+        ],
+      },
+
       {
         // Imágenes estáticas (public/)
         source: '/payments/:path*',

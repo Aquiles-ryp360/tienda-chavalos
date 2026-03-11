@@ -50,6 +50,10 @@ _tmp_delete_test/
 # ── Versiones antiguas de scripts ───────────
 prepare-installer.v[0-9]*.ps1
 
+# ── TypeScript generados ────────────────────
+tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+
 # ── IDE / Sistema / Basura ──────────────────
 .vscode/
 .idea/

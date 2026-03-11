@@ -1,29 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
+import { z } from 'zod'
 import { requireAuth } from '@/lib/auth-session'
 import {
   getErrorMessage,
-  parseNonEmptyString,
-  parseNumberLike,
   readJsonObject,
 } from '@/lib/api-utils'
 import { CACHE_TAGS } from '@/lib/cache-tags'
 import * as priceChangesAPI from '@backend/API/price-changes'
 
-const priceChangeTypes = new Set(['SUBIR', 'BAJAR'])
-const priceChangeModes = new Set(['PORCENTAJE', 'MONTO'])
-
-function isPriceChangeType(
-  value: unknown
-): value is priceChangesAPI.CreatePriceChangeInput['changeType'] {
-  return typeof value === 'string' && priceChangeTypes.has(value)
-}
-
-function isPriceChangeMode(
-  value: unknown
-): value is priceChangesAPI.CreatePriceChangeInput['changeMode'] {
-  return typeof value === 'string' && priceChangeModes.has(value)
-}
+// ── Zod schema para POST /api/price-changes ────────────────────────────────
+const CreatePriceChangeSchema = z.object({
+  productId: z.string().cuid('productId debe ser un CUID válido'),
+  presentationId: z.string().cuid().optional(),
+  changeType: z.enum(['SUBIR', 'BAJAR'] as const),
+  changeMode: z.enum(['PORCENTAJE', 'MONTO'] as const),
+  changeValue: z
+    .number()
+    .positive('changeValue debe ser mayor que 0')
+    .max(1_000_000),
+  reason: z
+    .string().min(3, 'La razón es obligatoria (mín. 3 caracteres)').max(500)
+    .transform(v => v.trim()),
+})
 
 /**
  * GET /api/price-changes - Obtener historial de cambios de precio
@@ -76,39 +75,19 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await readJsonObject(request)
-    const productId = parseNonEmptyString(body.productId)
-    const presentationId = parseNonEmptyString(body.presentationId)
-    const reason = parseNonEmptyString(body.reason)
-    const changeValue = parseNumberLike(body.changeValue)
+    const parsed = CreatePriceChangeSchema.safeParse(body)
 
-    if (
-      !productId ||
-      !isPriceChangeType(body.changeType) ||
-      !isPriceChangeMode(body.changeMode) ||
-      !reason
-    ) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Faltan campos requeridos' },
+        { error: 'Datos inválidos', details: parsed.error.flatten().fieldErrors },
         { status: 400 }
       )
     }
 
-    if (changeValue === undefined || changeValue <= 0) {
-      return NextResponse.json(
-        { error: 'El valor de cambio debe ser un número positivo' },
-        { status: 400 }
-      )
-    }
+    const { productId, presentationId, changeType, changeMode, changeValue, reason } = parsed.data
 
     const result = await priceChangesAPI.createPriceChange(
-      {
-        productId,
-        presentationId,
-        changeType: body.changeType,
-        changeMode: body.changeMode,
-        changeValue,
-        reason,
-      },
+      { productId, presentationId, changeType, changeMode, changeValue, reason },
       user.id
     )
 

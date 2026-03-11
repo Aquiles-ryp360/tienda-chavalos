@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { revalidateTag } from 'next/cache'
+import { z } from 'zod'
 import { requireAuth, requireAdmin } from '@/lib/auth-session'
 import {
   getErrorCode,
   getErrorMessage,
   getErrorProperty,
-  parseNonEmptyString,
-  parseNumberLike,
   readJsonObject,
 } from '@/lib/api-utils'
 import { CACHE_TAGS } from '@/lib/cache-tags'
@@ -16,35 +15,18 @@ import { ProductUnit } from '@web/lib/db'
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
-const productUnits = new Set(Object.values(ProductUnit))
-
-function isProductUnit(value: unknown): value is ProductUnit {
-  return typeof value === 'string' && productUnits.has(value as ProductUnit)
-}
-
-function parseCreateProductInput(
-  body: Record<string, unknown>
-): productsAPI.CreateProductInput | null {
-  const sku = parseNonEmptyString(body.sku)
-  const name = parseNonEmptyString(body.name)
-  const price = parseNumberLike(body.price)
-  const stock = parseNumberLike(body.stock)
-  const minStock = parseNumberLike(body.minStock)
-
-  if (!sku || !name || !isProductUnit(body.unit) || price === undefined || stock === undefined) {
-    return null
-  }
-
-  return {
-    sku,
-    name,
-    description: typeof body.description === 'string' ? body.description : undefined,
-    unit: body.unit,
-    price,
-    stock,
-    minStock,
-  }
-}
+// ── Zod schema: previene Prisma Object Injection, limita tamaños, sanitiza ──
+const CreateProductSchema = z.object({
+  sku: z
+    .string().min(1).max(50)
+    .regex(/^[A-Z0-9\-_]+$/i, 'SKU solo puede contener letras, números, guiones y guiones bajos'),
+  name: z.string().min(1).max(200).transform(v => v.trim().replace(/\s+/g, ' ')),
+  description: z.string().max(1000).transform(v => v.trim()).optional().nullable(),
+  unit: z.enum(Object.values(ProductUnit) as [string, ...string[]]),
+  price: z.number().positive().max(9_999_999),
+  stock: z.number().min(0),
+  minStock: z.number().min(0).optional(),
+})
 
 /**
  * GET /api/products - Listar y buscar productos
@@ -113,15 +95,16 @@ export async function POST(request: NextRequest) {
     await requireAdmin()
 
     const body = await readJsonObject(request)
-    const input = parseCreateProductInput(body)
+    const parsed = CreateProductSchema.safeParse(body)
 
-    if (!input) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Faltan campos requeridos: sku, name, unit, price, stock' },
+        { error: 'Datos inválidos', details: parsed.error.flatten().fieldErrors },
         { status: 400 }
       )
     }
 
+    const input = parsed.data as productsAPI.CreateProductInput
     const product = await productsAPI.createProduct(input)
 
     revalidateTag(CACHE_TAGS.productsList)
