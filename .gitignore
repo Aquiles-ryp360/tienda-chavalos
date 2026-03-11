@@ -13,7 +13,13 @@ coverage/
 # ── SECRETOS Y VARIABLES DE ENTORNO (¡CRUCIAL!) ──
 **/.env
 **/.env.*
-!**/.env.example 
+!**/.env.example
+
+# ── Credenciales OAuth de Google (¡NUNCA al repo!) ──
+client_secret*.json
+*googleusercontent.com.json
+*oauth*.json
+service_account*.json
 
 # ── Datos de la Base de Datos y Respaldos ──
 **/*.sql
