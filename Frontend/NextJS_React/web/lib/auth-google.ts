@@ -89,14 +89,14 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       }
 
       if (!linkedUser) {
-        // Email no registrado ni tiene username coincidente — rechazar
-        console.warn(`[auth-google] Login rechazado para email no autorizado: ${email}`)
-        return false
+        // Email no registrado — redirigir a la tienda pública en lugar de mostrar error
+        console.warn(`[auth-google] Email no autorizado, redirigiendo a tienda: ${email}`)
+        return '/tienda?msg=no-autorizado'
       }
 
       if (!linkedUser.isActive) {
-        console.warn(`[auth-google] Login rechazado: usuario inactivo (${email})`)
-        return false
+        console.warn(`[auth-google] Usuario inactivo, redirigiendo a tienda: ${email}`)
+        return '/tienda?msg=inactivo'
       }
 
       return true

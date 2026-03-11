@@ -65,6 +65,18 @@ export function BottomNav({ userRole, isCartOpen = false }: BottomNavProps) {
         <span className={styles.icon}>💳</span>
         <span className={styles.label}>Pagos</span>
       </Link>
+
+      {userRole === 'ADMIN' && (
+        <Link
+          href="/dashboard/acceso"
+          className={`${styles.navItem} ${
+            pathname === '/dashboard/acceso' ? styles.active : ''
+          }`}
+        >
+          <span className={styles.icon}>🔑</span>
+          <span className={styles.label}>Acceso</span>
+        </Link>
+      )}
     </nav>
   )
 }
