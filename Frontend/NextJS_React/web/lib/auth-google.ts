@@ -67,7 +67,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       // Buscar usuario por googleEmail (vinculación previa)
       let linkedUser = await prisma.user.findUnique({
         where: { googleEmail: email },
-        select: { id: true, isActive: true },
+        select: { id: true, isActive: true, role: true },
       })
 
       // Primera vez: vincular automáticamente si el username = email de Google
@@ -75,7 +75,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       if (!linkedUser) {
         const byUsername = await prisma.user.findUnique({
           where: { username: email },
-          select: { id: true, isActive: true },
+          select: { id: true, isActive: true, role: true },
         })
 
         if (byUsername) {
@@ -89,7 +89,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       }
 
       if (!linkedUser) {
-        // Email no registrado — redirigir a la tienda pública en lugar de mostrar error
+        // Email no registrado — redirigir a la tienda pública
         console.warn(`[auth-google] Email no autorizado, redirigiendo a tienda: ${email}`)
         return '/tienda?msg=no-autorizado'
       }
@@ -99,6 +99,12 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         return '/tienda?msg=inactivo'
       }
 
+      // SUPERADMIN → redirigir a panel de control especial
+      if (linkedUser.role === 'SUPERADMIN') {
+        return '/panel'
+      }
+
+      // ADMIN / CAJERO → dashboard normal
       return true
     },
 

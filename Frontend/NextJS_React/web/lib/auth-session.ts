@@ -158,24 +158,35 @@ export async function requireAuth(): Promise<SessionUser> {
 }
 
 /**
- * Verificar si es ADMIN
- * Equivalente Express: soloAdmin middleware
+ * Verificar si es ADMIN o SUPERADMIN
+ * (ambos pueden gestionar el sistema)
  */
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireAuth()
-  if (user.role !== UserRole.ADMIN) {
-    throw new Error('Requiere rol ADMIN')
+  if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPERADMIN) {
+    throw new Error('Requiere rol ADMIN o SUPERADMIN')
+  }
+  return user
+}
+
+/**
+ * Verificar si es SUPERADMIN (nivel más alto — solo Aquiles)
+ */
+export async function requireSuperAdmin(): Promise<SessionUser> {
+  const user = await requireAuth()
+  if (user.role !== UserRole.SUPERADMIN) {
+    throw new Error('Requiere rol SUPERADMIN')
   }
   return user
 }
 
 /**
  * Verificar si es ADMIN o CAJERO (cualquier empleado activo)
- * Equivalente Express: soloCajeroOAdmin middleware
+ * SUPERADMIN también pasa este check
  */
 export async function requireCajeroOrAdmin(): Promise<SessionUser> {
   const user = await requireAuth()
-  if (user.role !== UserRole.ADMIN && user.role !== UserRole.CAJERO) {
+  if (user.role !== UserRole.ADMIN && user.role !== UserRole.CAJERO && user.role !== UserRole.SUPERADMIN) {
     throw new Error('Requiere rol CAJERO o ADMIN')
   }
   return user
