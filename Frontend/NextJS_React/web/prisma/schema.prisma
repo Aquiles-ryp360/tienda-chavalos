@@ -82,6 +82,7 @@ model Product {
   saleItems      SaleItem[]
   stockMovements StockMovement[]
   priceChanges   PriceChange[]
+  forumPosts     ForumPost[]
 
   @@index([sku])
   @@index([name])
@@ -196,5 +197,21 @@ model PriceChange {
   @@index([productId])
   @@index([createdAt])
   @@map("price_changes")
+}
+
+// ========== TIENDA PÚBLICA ==========
+
+model ForumPost {
+  id          String   @id @default(cuid())
+  productId   String
+  authorName  String
+  content     String   @db.Text
+  isHidden    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, createdAt])
+  @@map("forum_posts")
 }
 
