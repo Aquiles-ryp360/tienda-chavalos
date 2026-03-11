@@ -51,6 +51,9 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
 
   secret: process.env.AUTH_SECRET,
 
+  // Necesario para funcionar en localhost y detrás de proxies/Vercel
+  trustHost: true,
+
   callbacks: {
     /**
      * Ejecutado ANTES de crear la sesión.
