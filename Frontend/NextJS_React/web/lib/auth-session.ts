@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { UserRole } from '@prisma/client'
+import { auth as googleAuth } from '@/lib/auth-google'
 
 export interface SessionUser {
   id: string
@@ -100,8 +101,7 @@ export async function createSession(user: SessionUser): Promise<void> {
 /**
  * Obtener y verificar la sesión actual.
  * Fuente 1: cookie HMAC propia (login usuario/contraseña)
- * Fuente 2: JWT de NextAuth (login con Google OAuth) — decodificado directamente
- *           de la cookie sin necesitar auth() ni contexto de request.
+ * Fuente 2: auth() de NextAuth v5 (login con Google OAuth)
  */
 export async function getSession(): Promise<SessionUser | null> {
   const cookieStore = await cookies()
@@ -117,47 +117,20 @@ export async function getSession(): Promise<SessionUser | null> {
     }
   }
 
-  // ── 2. JWT de NextAuth (login con Google) ─────────────────────────
-  // Se lee directamente la cookie del JWT sin llamar a auth(),
-  // que requiere contexto de request y falla con importación dinámica.
-  if (process.env.AUTH_SECRET) {
-    try {
-      const { decode } = await import('next-auth/jwt')
-
-      // NextAuth v5: "__Secure-authjs.session-token" en prod, "authjs.session-token" en dev
-      const cookieName = process.env.NODE_ENV === 'production'
-        ? '__Secure-authjs.session-token'
-        : 'authjs.session-token'
-
-      const rawToken = cookieStore.get(cookieName)?.value
-
-      if (rawToken) {
-        // En NextAuth v5, el JWT es JWE cifrado — el salt es el nombre de la cookie
-        interface NextAuthJWT {
-          userId?:       string
-          userRole?:     string
-          userFullName?: string
-          email?:        string
-          name?:         string
-        }
-        const token = await decode({
-          token:  rawToken,
-          secret: process.env.AUTH_SECRET,
-          salt:   cookieName,
-        }) as NextAuthJWT | null
-
-        if (token?.userId && token?.userRole) {
-          return {
-            id:       token.userId,
-            username: token.email        ?? '',
-            role:     token.userRole     as UserRole,
-            fullName: token.userFullName ?? token.name ?? '',
-          }
-        }
+  // ── 2. Sesión de NextAuth v5 (login con Google) ──────────────────
+  // auth() de v5 usa cookies() internamente — funciona en Server Components
+  try {
+    const session = await googleAuth()
+    if (session?.user?.id && session.user.role) {
+      return {
+        id:       session.user.id,
+        username: session.user.email   ?? '',
+        role:     session.user.role    as UserRole,
+        fullName: session.user.fullName ?? session.user.name ?? '',
       }
-    } catch {
-      // token inválido o expirado
     }
+  } catch {
+    // NextAuth no disponible o sesión inválida
   }
 
   return null

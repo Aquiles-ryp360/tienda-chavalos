@@ -2,7 +2,7 @@
 
 import { useState, useRef, FormEvent } from 'react'
 import Link from 'next/link'
-import { signOut } from 'next-auth/react'
+import { signOutGoogle } from '@/lib/auth-actions'
 import styles from './panel.module.css'
 
 interface Stats {
@@ -68,12 +68,9 @@ export function PanelView({ user, stats }: Props) {
           <Link href="/dashboard" className={styles.btnDash}>
             📊 Dashboard
           </Link>
-          <button
-            className={styles.btnLogout}
-            onClick={() => signOut({ callbackUrl: '/login' })}
-          >
-            Salir
-          </button>
+          <form action={signOutGoogle}>
+            <button type="submit" className={styles.btnLogout}>Salir</button>
+          </form>
         </div>
       </header>
 
