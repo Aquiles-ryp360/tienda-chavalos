@@ -98,21 +98,44 @@ export async function createSession(user: SessionUser): Promise<void> {
 }
 
 /**
- * Obtener y verificar la sesión actual. Rechaza tokens no firmados o manipulados.
+ * Obtener y verificar la sesión actual.
+ * Fuente 1: cookie HMAC propia (login usuario/contraseña)
+ * Fuente 2: JWT de NextAuth (login con Google OAuth)
  */
 export async function getSession(): Promise<SessionUser | null> {
-  const cookieStore = await cookies()
+  // ── 1. Cookie HMAC propia (login manual) ─────────────────────────
+  const cookieStore  = await cookies()
   const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value
 
-  if (!sessionToken) return null
-
-  try {
-    const payload = verifyToken(sessionToken)
-    if (!payload) return null
-    return JSON.parse(payload) as SessionUser
-  } catch {
-    return null
+  if (sessionToken) {
+    try {
+      const payload = verifyToken(sessionToken)
+      if (payload) return JSON.parse(payload) as SessionUser
+    } catch {
+      // token corrupto, cae al fallback
+    }
   }
+
+  // ── 2. JWT de NextAuth (login con Google) ─────────────────────────
+  // Importación dinámica para no cargar NextAuth si no está configurado
+  if (process.env.GOOGLE_CLIENT_ID) {
+    try {
+      const { auth } = await import('@/lib/auth-google')
+      const session  = await auth()
+      if (session?.user?.id && session.user.role) {
+        return {
+          id:       session.user.id,
+          username: session.user.email ?? '',
+          role:     session.user.role,
+          fullName: session.user.fullName ?? session.user.name ?? '',
+        }
+      }
+    } catch {
+      // NextAuth no configurado o token expirado
+    }
+  }
+
+  return null
 }
 
 /**
