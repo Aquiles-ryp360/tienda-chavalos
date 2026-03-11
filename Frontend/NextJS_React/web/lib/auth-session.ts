@@ -100,13 +100,14 @@ export async function createSession(user: SessionUser): Promise<void> {
 /**
  * Obtener y verificar la sesión actual.
  * Fuente 1: cookie HMAC propia (login usuario/contraseña)
- * Fuente 2: JWT de NextAuth (login con Google OAuth)
+ * Fuente 2: JWT de NextAuth (login con Google OAuth) — decodificado directamente
+ *           de la cookie sin necesitar auth() ni contexto de request.
  */
 export async function getSession(): Promise<SessionUser | null> {
-  // ── 1. Cookie HMAC propia (login manual) ─────────────────────────
-  const cookieStore  = await cookies()
-  const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value
+  const cookieStore = await cookies()
 
+  // ── 1. Cookie HMAC propia (login manual) ─────────────────────────
+  const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value
   if (sessionToken) {
     try {
       const payload = verifyToken(sessionToken)
@@ -117,21 +118,45 @@ export async function getSession(): Promise<SessionUser | null> {
   }
 
   // ── 2. JWT de NextAuth (login con Google) ─────────────────────────
-  // Importación dinámica para no cargar NextAuth si no está configurado
-  if (process.env.GOOGLE_CLIENT_ID) {
+  // Se lee directamente la cookie del JWT sin llamar a auth(),
+  // que requiere contexto de request y falla con importación dinámica.
+  if (process.env.AUTH_SECRET) {
     try {
-      const { auth } = await import('@/lib/auth-google')
-      const session  = await auth()
-      if (session?.user?.id && session.user.role) {
-        return {
-          id:       session.user.id,
-          username: session.user.email ?? '',
-          role:     session.user.role,
-          fullName: session.user.fullName ?? session.user.name ?? '',
+      const { decode } = await import('next-auth/jwt')
+
+      // NextAuth v5: "__Secure-authjs.session-token" en prod, "authjs.session-token" en dev
+      const cookieName = process.env.NODE_ENV === 'production'
+        ? '__Secure-authjs.session-token'
+        : 'authjs.session-token'
+
+      const rawToken = cookieStore.get(cookieName)?.value
+
+      if (rawToken) {
+        // En NextAuth v5, el JWT es JWE cifrado — el salt es el nombre de la cookie
+        interface NextAuthJWT {
+          userId?:       string
+          userRole?:     string
+          userFullName?: string
+          email?:        string
+          name?:         string
+        }
+        const token = await decode({
+          token:  rawToken,
+          secret: process.env.AUTH_SECRET,
+          salt:   cookieName,
+        }) as NextAuthJWT | null
+
+        if (token?.userId && token?.userRole) {
+          return {
+            id:       token.userId,
+            username: token.email        ?? '',
+            role:     token.userRole     as UserRole,
+            fullName: token.userFullName ?? token.name ?? '',
+          }
         }
       }
     } catch {
-      // NextAuth no configurado o token expirado
+      // token inválido o expirado
     }
   }
 
