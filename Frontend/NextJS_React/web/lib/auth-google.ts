@@ -141,7 +141,7 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
   },
 
   pages: {
-    signIn: '/login',              // Redirige a tu página de login existente
-    error: '/login?error=oauth',   // Errores de OAuth van al login con query param
+    signIn: '/login',   // Redirige a tu página de login existente
+    error: '/login',    // Auth.js agrega ?error=ErrorCode automáticamente
   },
 })

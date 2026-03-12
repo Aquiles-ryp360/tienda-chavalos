@@ -52,13 +52,15 @@ export function LoginView() {
           <p className={styles.subtitle}>Acceso al sistema</p>
         </div>
 
-        {/* Error de OAuth (email no autorizado u otro) */}
+        {/* Error de OAuth — Auth.js agrega ?error=ErrorCode a la URL */}
         {oauthError && (
           <div className={styles.error}>
-            {oauthError === 'oauth' || oauthError === 'OAuthCallbackError'
-              ? 'Error en la autenticación con Google. Intenta de nuevo.'
-              : oauthError === 'AccessDenied'
+            {oauthError === 'AccessDenied'
               ? 'Tu cuenta de Google no está autorizada. Contacta al administrador.'
+              : oauthError === 'Configuration'
+              ? 'Error de configuración OAuth. Verifica las credenciales de Google.'
+              : oauthError === 'OAuthCallback' || oauthError === 'OAuthCallbackError'
+              ? 'Error al conectar con Google. Intenta de nuevo.'
               : 'Error al iniciar sesión con Google.'}
           </div>
         )}
