@@ -49,16 +49,14 @@ export function Header({ user }: HeaderProps) {
             Dashboard
           </Link>
 
-          {isAdmin && (
-            <Link
-              href="/productos"
-              className={`${styles.navLink} ${
-                pathname === '/productos' ? styles.active : ''
-              }`}
-            >
-              Productos
-            </Link>
-          )}
+          <Link
+            href="/productos"
+            className={`${styles.navLink} ${
+              pathname === '/productos' ? styles.active : ''
+            }`}
+          >
+            Productos
+          </Link>
 
           <Link
             href="/caja"

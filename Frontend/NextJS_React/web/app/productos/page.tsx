@@ -1,14 +1,14 @@
 import { redirect } from 'next/navigation'
-import { requireAdmin } from '@/lib/auth-session'
+import { requireAuth } from '@/lib/auth-session'
 import { ProductosView } from '@/ui/pages/productos/ProductosView'
 import { getInitialAdminProducts } from '@/lib/server-data'
 
 export default async function ProductosPage() {
   let user
   try {
-    user = await requireAdmin()
+    user = await requireAuth()
   } catch {
-    redirect('/dashboard')
+    redirect('/login')
   }
 
   const { products, total } = await getInitialAdminProducts()

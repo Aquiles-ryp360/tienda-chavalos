@@ -24,17 +24,15 @@ export function BottomNav({ userRole, isCartOpen = false }: BottomNavProps) {
         <span className={styles.label}>Inicio</span>
       </Link>
 
-      {(userRole === 'ADMIN' || userRole === 'SUPERADMIN') && (
-        <Link
-          href="/productos"
-          className={`${styles.navItem} ${
-            pathname === '/productos' ? styles.active : ''
-          }`}
-        >
-          <span className={styles.icon}>📦</span>
-          <span className={styles.label}>Productos</span>
-        </Link>
-      )}
+      <Link
+        href="/productos"
+        className={`${styles.navItem} ${
+          pathname === '/productos' ? styles.active : ''
+        }`}
+      >
+        <span className={styles.icon}>📦</span>
+        <span className={styles.label}>Productos</span>
+      </Link>
 
       <Link
         href="/caja"

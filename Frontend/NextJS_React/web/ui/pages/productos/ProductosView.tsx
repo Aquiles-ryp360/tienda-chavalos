@@ -46,6 +46,7 @@ interface FormErrors {
 }
 
 export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: ProductosViewProps) {
+  const canEdit = user.role === 'ADMIN' || user.role === 'SUPERADMIN'
   const { notify } = useToast()
   const [search, setSearch] = useState('')
 
@@ -498,10 +499,12 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
             <h1 className={styles.pageTitle}>Gestión de Productos</h1>
             <p className={styles.pageSubtitle}>Administra el catálogo de productos de la ferretería</p>
           </div>
-          <Button variant="primary" onClick={handleCreate} className={styles.newProductBtn}>
-            <span className={styles.btnIcon}>+</span>
-            <span>Nuevo Producto</span>
-          </Button>
+          {canEdit && (
+            <Button variant="primary" onClick={handleCreate} className={styles.newProductBtn}>
+              <span className={styles.btnIcon}>+</span>
+              <span>Nuevo Producto</span>
+            </Button>
+          )}
         </div>
 
         <div className={styles.searchSection}>
@@ -523,7 +526,7 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
             <p className={styles.emptyIcon}>📦</p>
             <h3>{search ? 'No se encontraron productos' : 'No hay productos'}</h3>
             <p>{search ? 'Prueba con otro nombre o SKU.' : 'Comienza creando tu primer producto'}</p>
-            {!search && (
+            {!search && canEdit && (
               <Button variant="primary" onClick={handleCreate}>
                 + Nuevo Producto
               </Button>
@@ -599,22 +602,26 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                     </div>
 
                     <div className={styles.cardActions}>
-                      <button
-                        className={styles.cardActionBtn}
-                        onClick={() => handleEdit(product)}
-                        aria-label={`Editar ${product.name}`}
-                      >
-                        <span>✏️</span>
-                        <span>Editar</span>
-                      </button>
-                      <button
-                        className={`${styles.cardActionBtn} ${styles.danger}`}
-                        onClick={() => handleDeleteProduct(product.id)}
-                        aria-label={`Eliminar ${product.name}`}
-                      >
-                        <span>🗑️</span>
-                        <span>Eliminar</span>
-                      </button>
+                      {canEdit && (
+                        <button
+                          className={styles.cardActionBtn}
+                          onClick={() => handleEdit(product)}
+                          aria-label={`Editar ${product.name}`}
+                        >
+                          <span>✏️</span>
+                          <span>Editar</span>
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button
+                          className={`${styles.cardActionBtn} ${styles.danger}`}
+                          onClick={() => handleDeleteProduct(product.id)}
+                          aria-label={`Eliminar ${product.name}`}
+                        >
+                          <span>🗑️</span>
+                          <span>Eliminar</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )
@@ -688,22 +695,26 @@ export function ProductosView({ user, initialProducts = [], initialTotal = 0 }: 
                         </td>
                         <td className={styles.actionsCell}>
                           <div className={styles.actionsGroup}>
-                            <button
-                              className={styles.actionBtn}
-                              onClick={() => handleEdit(product)}
-                              aria-label={`Editar producto ${product.name}`}
-                              title="Editar"
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
-                              onClick={() => handleDeleteProduct(product.id)}
-                              aria-label={`Eliminar producto ${product.name}`}
-                              title="Eliminar"
-                            >
-                              🗑️
-                            </button>
+                            {canEdit && (
+                              <button
+                                className={styles.actionBtn}
+                                onClick={() => handleEdit(product)}
+                                aria-label={`Editar producto ${product.name}`}
+                                title="Editar"
+                              >
+                                ✏️
+                              </button>
+                            )}
+                            {canEdit && (
+                              <button
+                                className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+                                onClick={() => handleDeleteProduct(product.id)}
+                                aria-label={`Eliminar producto ${product.name}`}
+                                title="Eliminar"
+                              >
+                                🗑️
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
