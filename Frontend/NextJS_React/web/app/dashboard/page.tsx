@@ -11,6 +11,11 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
+  // SUPERADMIN siempre va al panel de control
+  if (user!.role === 'SUPERADMIN') {
+    redirect('/panel')
+  }
+
   const {
     productsCount,
     lowStockProducts,
