@@ -2,6 +2,7 @@
 
 import { useState, FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { signIn } from 'next-auth/react'
 import { Button } from '@/ui/components/Button'
 import styles from './login.module.css'
 
@@ -72,9 +73,9 @@ export function LoginView() {
           disabled={googleLoading || loading}
           onClick={() => {
             setGoogleLoading(true)
-            // Navega directamente al endpoint OAuth de Auth.js v5.
-            // Más robusto que Server Action en todos los entornos (local, Vercel).
-            window.location.href = '/api/auth/signin/google?callbackUrl=' + encodeURIComponent('/dashboard')
+            // signIn de next-auth/react maneja el CSRF token automáticamente.
+            // No requiere SessionProvider, funciona en cualquier Client Component.
+            signIn('google', { callbackUrl: '/dashboard' })
           }}
         >
           {googleLoading ? (
