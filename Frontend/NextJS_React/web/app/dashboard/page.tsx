@@ -11,6 +11,11 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
+  // SUPERADMIN va a su panel. La sesión ya está escrita aquí (post-OAuth).
+  if (user!.role === 'SUPERADMIN') {
+    redirect('/panel')
+  }
+
   const {
     productsCount,
     lowStockProducts,

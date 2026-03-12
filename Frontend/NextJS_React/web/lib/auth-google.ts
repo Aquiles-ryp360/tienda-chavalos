@@ -100,12 +100,10 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         return '/tienda?msg=inactivo'
       }
 
-      // SUPERADMIN → redirigir a panel de control
-      if (linkedUser.role === 'SUPERADMIN') {
-        return '/panel'
-      }
-
-      // ADMIN / CAJERO → dashboard
+      // SUPERADMIN, ADMIN, CAJERO → sesión válida.
+      // Auth.js escribe la cookie JWT y luego redirige al callbackUrl (/dashboard).
+      // El redirect a /panel para SUPERADMIN ocurre en dashboard/page.tsx
+      // DESPUÉS de que la cookie ya está escrita.
       return true
     },
 
