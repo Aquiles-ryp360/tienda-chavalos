@@ -100,7 +100,12 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         return '/tienda?msg=inactivo'
       }
 
-      // SUPERADMIN, ADMIN, CAJERO → permitir, Auth.js redirige al callbackUrl (/dashboard)
+      // SUPERADMIN → redirigir a panel de control
+      if (linkedUser.role === 'SUPERADMIN') {
+        return '/panel'
+      }
+
+      // ADMIN / CAJERO → dashboard
       return true
     },
 
