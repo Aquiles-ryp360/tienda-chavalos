@@ -24,7 +24,7 @@ export function BottomNav({ userRole, isCartOpen = false }: BottomNavProps) {
         <span className={styles.label}>Inicio</span>
       </Link>
 
-      {userRole === 'ADMIN' && (
+      {(userRole === 'ADMIN' || userRole === 'SUPERADMIN') && (
         <Link
           href="/productos"
           className={`${styles.navItem} ${
@@ -66,7 +66,7 @@ export function BottomNav({ userRole, isCartOpen = false }: BottomNavProps) {
         <span className={styles.label}>Pagos</span>
       </Link>
 
-      {userRole === 'ADMIN' && (
+      {(userRole === 'ADMIN' || userRole === 'SUPERADMIN') && (
         <Link
           href="/dashboard/acceso"
           className={`${styles.navItem} ${
@@ -75,6 +75,18 @@ export function BottomNav({ userRole, isCartOpen = false }: BottomNavProps) {
         >
           <span className={styles.icon}>🔑</span>
           <span className={styles.label}>Acceso</span>
+        </Link>
+      )}
+
+      {userRole === 'SUPERADMIN' && (
+        <Link
+          href="/panel"
+          className={`${styles.navItem} ${
+            pathname === '/panel' ? styles.active : ''
+          }`}
+        >
+          <span className={styles.icon}>⚙️</span>
+          <span className={styles.label}>Panel</span>
         </Link>
       )}
     </nav>

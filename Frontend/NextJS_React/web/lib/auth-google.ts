@@ -89,18 +89,18 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
       }
 
       if (!linkedUser) {
-        // Email no registrado — denegar acceso. La página de login muestra el mensaje.
+        // Email no registrado → tienda pública
         console.warn(`[auth-google] Email no autorizado: ${email}`)
-        return false
+        return '/tienda?msg=no-autorizado'
       }
 
       if (!linkedUser.isActive) {
-        console.warn(`[auth-google] Usuario inactivo, redirigiendo a tienda: ${email}`)
-        return false
+        // Usuario desactivado → tienda pública
+        console.warn(`[auth-google] Usuario inactivo: ${email}`)
+        return '/tienda?msg=inactivo'
       }
 
-      // Todos los roles válidos (SUPERADMIN, ADMIN, CAJERO) → permitir login.
-      // La redirección a /panel para SUPERADMIN se maneja en /dashboard/page.tsx
+      // SUPERADMIN, ADMIN, CAJERO → permitir, Auth.js redirige al callbackUrl (/dashboard)
       return true
     },
 
