@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { signOut } from 'next-auth/react'
 import styles from './header.module.css'
 import { Button } from './Button'
@@ -17,8 +18,13 @@ export function Header({ user }: HeaderProps) {
   const pathname = usePathname()
   const router = useRouter()
 
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+
   const isAdmin      = user.role === 'ADMIN' || user.role === 'SUPERADMIN'
   const isSuperAdmin = user.role === 'SUPERADMIN'
+
+  const isActive = (path: string) => mounted && pathname === path ? styles.active : ''
 
   const handleLogout = async () => {
     try {
@@ -40,71 +46,18 @@ export function Header({ user }: HeaderProps) {
 
         {/* Desktop Navigation - Oculto en móvil */}
         <nav className={styles.nav}>
-          <Link
-            href="/dashboard"
-            className={`${styles.navLink} ${
-              pathname === '/dashboard' ? styles.active : ''
-            }`}
-          >
-            Dashboard
-          </Link>
-
-          <Link
-            href="/productos"
-            className={`${styles.navLink} ${
-              pathname === '/productos' ? styles.active : ''
-            }`}
-          >
-            Productos
-          </Link>
-
-          <Link
-            href="/caja"
-            className={`${styles.navLink} ${
-              pathname === '/caja' ? styles.active : ''
-            }`}
-          >
-            Caja
-          </Link>
-
-          <Link
-            href="/ventas"
-            className={`${styles.navLink} ${
-              pathname === '/ventas' ? styles.active : ''
-            }`}
-          >
-            Ventas
-          </Link>
-
-          <Link
-            href="/pagos"
-            className={`${styles.navLink} ${
-              pathname === '/pagos' ? styles.active : ''
-            }`}
-          >
-            Pagos
-          </Link>
+          <Link href="/dashboard" className={`${styles.navLink} ${isActive('/dashboard')}`}>Dashboard</Link>
+          <Link href="/productos" className={`${styles.navLink} ${isActive('/productos')}`}>Productos</Link>
+          <Link href="/caja" className={`${styles.navLink} ${isActive('/caja')}`}>Caja</Link>
+          <Link href="/ventas" className={`${styles.navLink} ${isActive('/ventas')}`}>Ventas</Link>
+          <Link href="/pagos" className={`${styles.navLink} ${isActive('/pagos')}`}>Pagos</Link>
 
           {isAdmin && (
-            <Link
-              href="/dashboard/acceso"
-              className={`${styles.navLink} ${
-                pathname === '/dashboard/acceso' ? styles.active : ''
-              }`}
-            >
-              Acceso
-            </Link>
+            <Link href="/dashboard/acceso" className={`${styles.navLink} ${isActive('/dashboard/acceso')}`}>Acceso</Link>
           )}
 
           {isSuperAdmin && (
-            <Link
-              href="/panel"
-              className={`${styles.navLink} ${
-                pathname === '/panel' ? styles.active : ''
-              }`}
-            >
-              ⚙️ Panel
-            </Link>
+            <Link href="/panel" className={`${styles.navLink} ${isActive('/panel')}`}>⚙️ Panel</Link>
           )}
         </nav>
 
